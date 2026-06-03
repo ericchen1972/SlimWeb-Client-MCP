@@ -82,6 +82,7 @@ test("site MCP tools/list is routed by callback code", async () => {
         "client_catalog_overview",
         "client_catalog_search",
         "client_product_detail",
+        "client_order_list",
         "client_order_lookup",
       ],
     );
@@ -105,6 +106,10 @@ test("site MCP tools/list is routed by callback code", async () => {
 
     const orderTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_order_lookup");
     assert.equal(orderTool.outputSchema.properties.order.type, "object");
+
+    const orderListTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_order_list");
+    assert.equal(orderListTool.inputSchema.properties.status.enum[0], "all");
+    assert.equal(orderListTool.outputSchema.properties.orders.type, "array");
   });
 });
 
@@ -301,6 +306,28 @@ test("site MCP order lookup requires a session scoped to the same callback code"
       response.headers.get("www-authenticate") ?? "",
       /oauth-protected-resource/,
     );
+  });
+});
+
+test("site MCP order list requires a signed-in member session", async () => {
+  await withApp(fakeRepository(), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 8,
+        method: "tools/call",
+        params: {
+          name: "client_order_list",
+          arguments: { status: "pending" },
+        },
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 401);
+    assert.equal(body.error.code, -32001);
   });
 });
 

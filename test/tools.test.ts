@@ -8,6 +8,7 @@ test("tool registry exposes only consumer-facing tools", () => {
     getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async () => ({ items: [] }),
     getProductDetail: async () => ({ product: null }),
+    getOrderList: async () => ({ orders: [] }),
     getOrderSummary: async () => ({ order: null }),
   });
 
@@ -17,6 +18,7 @@ test("tool registry exposes only consumer-facing tools", () => {
       "client_catalog_overview",
       "client_catalog_search",
       "client_product_detail",
+      "client_order_list",
       "client_order_lookup",
     ],
   );
@@ -29,6 +31,7 @@ test("client_catalog_overview dispatches to Webless catalog overview", async () 
     }),
     searchCatalog: async () => ({ items: [] }),
     getProductDetail: async () => ({ product: null }),
+    getOrderList: async () => ({ orders: [] }),
     getOrderSummary: async () => ({ order: null }),
   });
 
@@ -54,6 +57,7 @@ test("client_catalog_search dispatches to Webless catalog search", async () => {
     getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async (input) => ({ received: input }),
     getProductDetail: async () => ({ product: null }),
+    getOrderList: async () => ({ orders: [] }),
     getOrderSummary: async () => ({ order: null }),
   });
 
@@ -89,6 +93,7 @@ test("client_catalog_search rejects more than five requested products", async ()
     getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async (input) => ({ received: input }),
     getProductDetail: async () => ({ product: null }),
+    getOrderList: async () => ({ orders: [] }),
     getOrderSummary: async () => ({ order: null }),
   });
 
@@ -101,11 +106,34 @@ test("client_catalog_search rejects more than five requested products", async ()
   );
 });
 
+test("client_order_list dispatches status filters to Webless", async () => {
+  const registry = createToolRegistry({
+    getCatalogOverview: async () => ({ categories: [] }),
+    searchCatalog: async () => ({ items: [] }),
+    getProductDetail: async () => ({ product: null }),
+    getOrderList: async (input) => ({ received: input }),
+    getOrderSummary: async () => ({ order: null }),
+  });
+
+  const result = await registry.callTool("client_order_list", {
+    status: "pending",
+    limit: 5,
+  });
+
+  assert.deepEqual(result.structuredContent, {
+    received: {
+      status: "pending",
+      limit: 5,
+    },
+  });
+});
+
 test("unknown tools are rejected", async () => {
   const registry = createToolRegistry({
     getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async () => ({ items: [] }),
     getProductDetail: async () => ({ product: null }),
+    getOrderList: async () => ({ orders: [] }),
     getOrderSummary: async () => ({ order: null }),
   });
 

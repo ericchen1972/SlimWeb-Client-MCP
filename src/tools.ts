@@ -2,6 +2,7 @@ import { z, type ZodRawShape } from "zod";
 
 import type {
   CatalogSearchInput,
+  OrderListInput,
   OrderSummaryInput,
   ProductDetailInput,
   WeblessJson,
@@ -12,6 +13,7 @@ export interface ConsumerWeblessClient {
   getCatalogOverview(): Promise<WeblessJson>;
   searchCatalog(input: CatalogSearchInput): Promise<WeblessJson>;
   getProductDetail(input: ProductDetailInput): Promise<WeblessJson>;
+  getOrderList(input: OrderListInput): Promise<WeblessJson>;
   getOrderSummary(input: OrderSummaryInput): Promise<WeblessJson>;
 }
 
@@ -57,6 +59,11 @@ const productDetailSchema = {
 
 const orderLookupSchema = {
   orderToken: z.string().trim().min(1),
+} satisfies ZodRawShape;
+
+const orderListSchema = {
+  status: z.enum(["all", "pending", "completed"]).default("all").optional(),
+  limit: z.number().int().min(1).max(20).optional(),
 } satisfies ZodRawShape;
 
 const productProperties = {
@@ -127,6 +134,18 @@ const orderLookupOutputSchema = {
   },
 } satisfies Record<string, unknown>;
 
+const orderListOutputSchema = {
+  type: "object",
+  properties: {
+    site: { type: "object" },
+    filters: { type: "object" },
+    orders: {
+      type: "array",
+      items: { type: "object" },
+    },
+  },
+} satisfies Record<string, unknown>;
+
 export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry {
   const definitions = [
     {
@@ -179,9 +198,20 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
         client.getProductDetail(z.object(productDetailSchema).parse(args)),
     },
     {
+      name: "client_order_list",
+      title: "List customer orders",
+      description:
+        "List the signed-in customer's orders without requiring an order number. Use status=all for every recent order, status=pending for orders still being processed or shipped, and status=completed for delivered/completed orders. Results include payment and logistics progress when available.",
+      inputSchema: orderListSchema,
+      outputSchema: orderListOutputSchema,
+      handler: (args: unknown) =>
+        client.getOrderList(z.object(orderListSchema).parse(args)),
+    },
+    {
       name: "client_order_lookup",
       title: "Look up customer order",
-      description: "Retrieve a customer-visible order summary by order token.",
+      description:
+        "Retrieve one customer-visible order summary by order number/token. Prefer client_order_list when the shopper asks which orders they have or asks about order progress without giving an order number.",
       inputSchema: orderLookupSchema,
       outputSchema: orderLookupOutputSchema,
       handler: (args: unknown) =>

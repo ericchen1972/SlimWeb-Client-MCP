@@ -671,7 +671,7 @@ function createSiteRegistry(
 }
 
 function toolRequiresSession(toolName: string): boolean {
-  return toolName === "client_order_lookup";
+  return toolName === "client_order_list" || toolName === "client_order_lookup";
 }
 
 function toolForMcp(tool: ReturnType<ReturnType<typeof createToolRegistry>["listTools"]>[number]) {
@@ -720,6 +720,16 @@ function inputSchemaForTool(toolName: string) {
         orderToken: { type: "string" },
       },
       required: ["orderToken"],
+    };
+  }
+
+  if (toolName === "client_order_list") {
+    return {
+      type: "object",
+      properties: {
+        status: { type: "string", enum: ["all", "pending", "completed"] },
+        limit: { type: "number", minimum: 1, maximum: 20 },
+      },
     };
   }
 

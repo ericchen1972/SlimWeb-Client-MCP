@@ -90,6 +90,27 @@ test("getOrderSummary sends order token as a path segment", async () => {
   assert.deepEqual(result, { order: { number: "A001" } });
 });
 
+test("getOrderList sends member id and status filters", async () => {
+  const requests: Request[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    memberId: 42,
+    fetchImpl: async (input) => {
+      requests.push(input as Request);
+      return Response.json({ orders: [{ number: "A001" }] });
+    },
+  });
+
+  const result = await client.getOrderList({ status: "pending", limit: 5 });
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/orders?site=site-1&member_id=42&status=pending&limit=5",
+  );
+  assert.deepEqual(result, { orders: [{ number: "A001" }] });
+});
+
 test("requests throw a structured error for non-2xx Webless responses", async () => {
   const client = new WeblessClient({
     baseUrl: "https://example.test",

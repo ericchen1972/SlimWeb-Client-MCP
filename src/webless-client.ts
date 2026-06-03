@@ -16,6 +16,11 @@ export interface OrderSummaryInput {
   orderToken: string;
 }
 
+export interface OrderListInput {
+  status?: "all" | "pending" | "completed";
+  limit?: number;
+}
+
 export type WeblessJson = Record<string, unknown>;
 
 export interface WeblessClientOptions {
@@ -95,6 +100,25 @@ export class WeblessClient {
 
     if (this.memberId !== undefined) {
       url.searchParams.set("member_id", String(this.memberId));
+    }
+
+    return this.getJson(url);
+  }
+
+  getOrderList(input: OrderListInput = {}): Promise<WeblessJson> {
+    const url = this.url("/api/storefront/orders");
+    this.appendSite(url);
+
+    if (this.memberId !== undefined) {
+      url.searchParams.set("member_id", String(this.memberId));
+    }
+
+    if (input.status !== undefined) {
+      url.searchParams.set("status", input.status);
+    }
+
+    if (input.limit !== undefined) {
+      url.searchParams.set("limit", String(input.limit));
     }
 
     return this.getJson(url);
