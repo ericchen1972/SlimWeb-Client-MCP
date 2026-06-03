@@ -421,28 +421,35 @@ async function handleMcp(
     return;
   }
 
-  let session: ClientSessionPayload | null = null;
+  const params =
+    message.params && typeof message.params === "object"
+      ? (message.params as Record<string, unknown>)
+      : {};
+  const toolName = String(params.name ?? "");
+  const needsSession =
+    message.method === "tools/call" && toolRequiresSession(toolName);
+  let session = verifySessionToken(
+    readSessionToken({
+      authorization: request.headers.authorization,
+      cookie: request.headers.cookie,
+    }),
+    sessionSecret,
+  );
 
-  if (["tools/list", "tools/call"].includes(String(message.method))) {
-    session = verifySessionToken(
-      readSessionToken({
-        authorization: request.headers.authorization,
-        cookie: request.headers.cookie,
-      }),
-      sessionSecret,
+  if (session && (session.callback_code !== site.callbackCode || session.site_id !== site.id)) {
+    session = null;
+  }
+
+  if (needsSession && !session) {
+    jsonResponse(
+      response,
+      401,
+      mcpError(message.id ?? null, -32001, "Google login required for this site MCP."),
+      {
+        "www-authenticate": protectedResourceChallenge(request, site),
+      },
     );
-
-    if (!session || session.callback_code !== site.callbackCode || session.site_id !== site.id) {
-      jsonResponse(
-        response,
-        401,
-        mcpError(message.id ?? null, -32001, "Google login required for this site MCP."),
-        {
-          "www-authenticate": protectedResourceChallenge(request, site),
-        },
-      );
-      return;
-    }
+    return;
   }
 
   jsonResponse(response, 200, await handleMcpMessage(message, site, options, session));
@@ -501,6 +508,10 @@ function createSiteRegistry(
       fetchImpl: options.fetchImpl,
     }),
   );
+}
+
+function toolRequiresSession(toolName: string): boolean {
+  return toolName === "client_order_lookup";
 }
 
 function toolForMcp(tool: ReturnType<ReturnType<typeof createToolRegistry>["listTools"]>[number]) {
