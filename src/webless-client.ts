@@ -16,7 +16,7 @@ export interface OrderSummaryInput {
   orderToken: string;
 }
 
-export type WeblessJson = unknown;
+export type WeblessJson = Record<string, unknown>;
 
 export interface WeblessClientOptions {
   baseUrl: string;
@@ -127,7 +127,11 @@ export class WeblessClient {
       throw new Error(`Webless request failed: ${response.status} ${message}`);
     }
 
-    return body;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("Webless request failed: response body must be a JSON object");
+    }
+
+    return body as WeblessJson;
   }
 }
 

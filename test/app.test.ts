@@ -86,9 +86,59 @@ test("site MCP tools/list is routed by callback code", async () => {
       ],
     );
     const searchTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_catalog_search");
-    assert.equal(searchTool.inputSchema.properties.limit.maximum, 10);
+    assert.equal(searchTool.inputSchema.properties.limit.maximum, 5);
     assert.equal(searchTool.inputSchema.properties.minPrice.type, "number");
     assert.equal(searchTool.inputSchema.properties.freshness.enum[0], "latest");
+    assert.equal(searchTool._meta.ui.resourceUri, "ui://widget/product-list.html");
+    assert.equal(searchTool._meta["openai/outputTemplate"], "ui://widget/product-list.html");
+    assert.equal(searchTool.outputSchema.properties.items.maxItems, 5);
+  });
+});
+
+test("site MCP product list widget resource can be listed and read", async () => {
+  await withApp(fakeRepository(), async (baseUrl) => {
+    const listResponse = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "resources/list",
+      }),
+    });
+    const listBody = await listResponse.json();
+
+    assert.equal(listResponse.status, 200);
+    assert.equal(listBody.result.resources[0].uri, "ui://widget/product-list.html");
+    assert.equal(listBody.result.resources[0].mimeType, "text/html;profile=mcp-app");
+
+    const readResponse = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "resources/read",
+        params: {
+          uri: "ui://widget/product-list.html",
+        },
+      }),
+    });
+    const readBody = await readResponse.json();
+
+    assert.equal(readResponse.status, 200);
+    assert.equal(readBody.result.contents[0].mimeType, "text/html;profile=mcp-app");
+    assert.match(readBody.result.contents[0].text, /slimweb-products/);
+    assert.deepEqual(
+      readBody.result.contents[0]._meta.ui.csp.resourceDomains,
+      [
+        "https://slimweb.tw",
+        "https://i1.momoshop.com.tw",
+        "https://i2.momoshop.com.tw",
+        "https://i3.momoshop.com.tw",
+        "https://i4.momoshop.com.tw",
+      ],
+    );
   });
 });
 
@@ -133,7 +183,8 @@ test("site MCP storefront catalog tools can be called without a session", async 
 
     assert.equal(response.status, 200);
     assert.equal(body.result.content[0].type, "text");
-    assert.match(body.result.content[0].text, /"items"/);
+    assert.deepEqual(body.result.structuredContent, { items: [] });
+    assert.match(body.result.content[0].text, /No matching storefront products/);
   });
 });
 
@@ -197,7 +248,8 @@ test("site MCP tools/call accepts a bearer session for the same callback code", 
 
     assert.equal(response.status, 200);
     assert.equal(body.result.content[0].type, "text");
-    assert.match(body.result.content[0].text, /"items"/);
+    assert.deepEqual(body.result.structuredContent, { items: [] });
+    assert.match(body.result.content[0].text, /No matching storefront products/);
   });
 });
 

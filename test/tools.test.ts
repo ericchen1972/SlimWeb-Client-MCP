@@ -35,6 +35,9 @@ test("client_catalog_overview dispatches to Webless catalog overview", async () 
   const result = await registry.callTool("client_catalog_overview", {});
 
   assert.deepEqual(result, {
+    structuredContent: {
+      categories: [{ name: "機械錶", path: ["精品手錶", "機械錶"] }],
+    },
     content: [
       {
         type: "text",
@@ -63,24 +66,25 @@ test("client_catalog_search dispatches to Webless catalog search", async () => {
   });
 
   assert.deepEqual(result, {
+    structuredContent: {
+      received: {
+        query: "tea",
+        limit: 3,
+        minPrice: 1000,
+        maxPrice: 5000,
+        freshness: "latest",
+      },
+    },
     content: [
       {
         type: "text",
-        text: JSON.stringify({
-          received: {
-            query: "tea",
-            limit: 3,
-            minPrice: 1000,
-            maxPrice: 5000,
-            freshness: "latest",
-          },
-        }, null, 2),
+        text: "No matching storefront products were found.",
       },
     ],
   });
 });
 
-test("client_catalog_search rejects more than ten requested products", async () => {
+test("client_catalog_search rejects more than five requested products", async () => {
   const registry = createToolRegistry({
     getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async (input) => ({ received: input }),
@@ -91,9 +95,9 @@ test("client_catalog_search rejects more than ten requested products", async () 
   await assert.rejects(
     () => registry.callTool("client_catalog_search", {
       query: "tea",
-      limit: 11,
+      limit: 6,
     }),
-    /Number must be less than or equal to 10/,
+    /Number must be less than or equal to 5/,
   );
 });
 

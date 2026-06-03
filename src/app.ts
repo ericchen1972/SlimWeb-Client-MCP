@@ -22,6 +22,11 @@ import {
 } from "./site-member-repository.js";
 import { createToolRegistry } from "./tools.js";
 import { WeblessClient } from "./webless-client.js";
+import {
+  productListWidgetContents,
+  productListWidgetResource,
+  PRODUCT_LIST_WIDGET_URI,
+} from "./widgets.js";
 
 interface RequestHandlerOptions {
   config: ClientMcpConfig;
@@ -467,13 +472,34 @@ async function handleMcpMessage(
     case "initialize":
       return mcpResult(id, {
         protocolVersion: "2025-03-26",
-        capabilities: { tools: { listChanged: false } },
+        capabilities: {
+          tools: { listChanged: false },
+          resources: { listChanged: false },
+        },
         serverInfo: { name: "slimweb-client-mcp", version: "0.1.0" },
       });
 
     case "tools/list": {
       const registry = createSiteRegistry(site, options);
       return mcpResult(id, { tools: registry.listTools().map(toolForMcp) });
+    }
+
+    case "resources/list": {
+      return mcpResult(id, { resources: [productListWidgetResource()] });
+    }
+
+    case "resources/read": {
+      const params =
+        message.params && typeof message.params === "object"
+          ? (message.params as Record<string, unknown>)
+          : {};
+      const uri = String(params.uri ?? "");
+
+      if (uri !== PRODUCT_LIST_WIDGET_URI) {
+        return mcpError(id, -32002, `Unknown MCP resource: ${uri}`);
+      }
+
+      return mcpResult(id, { contents: [productListWidgetContents()] });
     }
 
     case "tools/call": {
@@ -520,6 +546,9 @@ function toolForMcp(tool: ReturnType<ReturnType<typeof createToolRegistry>["list
     title: tool.title,
     description: tool.description,
     inputSchema: inputSchemaForTool(tool.name),
+    outputSchema: tool.outputSchema,
+    annotations: tool.annotations,
+    _meta: tool._meta,
   };
 }
 
@@ -529,7 +558,7 @@ function inputSchemaForTool(toolName: string) {
       type: "object",
       properties: {
         query: { type: "string" },
-        limit: { type: "number", minimum: 1, maximum: 10 },
+        limit: { type: "number", minimum: 1, maximum: 5 },
         minPrice: { type: "number", minimum: 0 },
         maxPrice: { type: "number", minimum: 0 },
         freshness: { type: "string", enum: ["latest"] },

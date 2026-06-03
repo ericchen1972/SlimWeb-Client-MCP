@@ -4,6 +4,11 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import type { ClientMcpConfig } from "./config.js";
 import { WeblessClient } from "./webless-client.js";
 import { createToolRegistry, type ToolRegistry } from "./tools.js";
+import {
+  productListWidgetContents,
+  productListWidgetResource,
+  PRODUCT_LIST_WIDGET_URI,
+} from "./widgets.js";
 
 export function createServer(config: ClientMcpConfig): McpServer {
   const server = new McpServer({
@@ -12,6 +17,7 @@ export function createServer(config: ClientMcpConfig): McpServer {
   });
 
   const registry = createToolRegistry(new WeblessClient(config));
+  registerConsumerResources(server);
   registerConsumerTools(server, registry);
 
   return server;
@@ -28,10 +34,29 @@ export function registerConsumerTools(
         title: tool.title,
         description: tool.description,
         inputSchema: tool.inputSchema,
+        annotations: tool.annotations as never,
+        _meta: tool._meta,
       },
       (args) => registry.callTool(tool.name, args),
     );
   }
+}
+
+export function registerConsumerResources(server: McpServer): void {
+  const resource = productListWidgetResource();
+
+  server.registerResource(
+    "slimweb_product_list_widget",
+    PRODUCT_LIST_WIDGET_URI,
+    {
+      title: resource.name,
+      description: resource.description,
+      mimeType: resource.mimeType,
+    },
+    async () => ({
+      contents: [productListWidgetContents()],
+    }),
+  );
 }
 
 export async function runStdioServer(config: ClientMcpConfig): Promise<void> {

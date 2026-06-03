@@ -15,9 +15,10 @@ This repo is separate from:
   is broad or ambiguous.
 - `client_catalog_search`: search customer-visible storefront products by
   product text or category after the shopper intent is clear. Optional filters
-  include quantity `limit` (default 3, max 10), `minPrice`, `maxPrice`,
-  `freshness=latest`, `popularity=popular`, and `priceOrder=asc|desc`. AI
-  clients should show `image_url` as product images and include `product_url`.
+  include quantity `limit` (default 3, max 5), `minPrice`, `maxPrice`,
+  `freshness=latest`, `popularity=popular`, and `priceOrder=asc|desc`. Apps
+  clients can render the `ui://widget/product-list.html` product-list widget;
+  other clients can use `image_url` and `product_url` from the tool result.
 - `client_product_detail`: fetch a customer-visible product detail.
 - `client_order_lookup`: fetch a customer-visible order summary by token.
 
