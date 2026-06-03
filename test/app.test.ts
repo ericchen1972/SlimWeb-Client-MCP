@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import type { AddressInfo } from "node:net";
 import { createServer } from "node:http";
 import test from "node:test";
@@ -187,6 +188,122 @@ test("site MCP order lookup passes the authenticated member id to Webless", asyn
     weblessRequests[0],
     `https://webless.example.test/api/storefront/orders/SW202606030001?site=${site.callbackCode}&member_id=${member.id}`,
   );
+});
+
+test("OAuth metadata is exposed for ChatGPT remote MCP discovery", async () => {
+  await withApp(fakeRepository(), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
+    const body = await response.json();
+    const siteScopedResponse = await fetch(
+      `${baseUrl}/.well-known/oauth-authorization-server/sites/${site.callbackCode}/mcp`,
+    );
+    const siteScopedBody = await siteScopedResponse.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.issuer, baseUrl);
+    assert.equal(body.authorization_endpoint, `${baseUrl}/oauth/authorize`);
+    assert.equal(body.token_endpoint, `${baseUrl}/oauth/token`);
+    assert.equal(body.registration_endpoint, `${baseUrl}/oauth/register`);
+    assert.deepEqual(body.response_types_supported, ["code"]);
+    assert.equal(siteScopedResponse.status, 200);
+    assert.equal(
+      siteScopedBody.resource,
+      `${baseUrl}/sites/${site.callbackCode}/mcp`,
+    );
+  });
+});
+
+test("OAuth authorization code flow issues a bearer token accepted by tools/call", async () => {
+  const provisions: Array<{ siteId: number; profile: GoogleProfile }> = [];
+  const repository = fakeRepository({
+    provisionMember: async (siteId, profile) => {
+      provisions.push({ siteId, profile });
+      return member;
+    },
+  });
+
+  await withApp(repository, async (baseUrl) => {
+    const codeVerifier = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const codeChallenge = createHash("sha256")
+      .update(codeVerifier)
+      .digest("base64url");
+    const authorizeParams = {
+      client_id: "chatgpt",
+      redirect_uri: `${baseUrl}/oauth/callback`,
+      response_type: "code",
+      state: "state-1",
+      resource: `${baseUrl}/sites/${site.callbackCode}/mcp`,
+      code_challenge: codeChallenge,
+      code_challenge_method: "S256",
+    };
+    const authorizeResponse = await fetch(`${baseUrl}/oauth/google`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        ...authorizeParams,
+        credential: "google-id-token",
+      }),
+      redirect: "manual",
+    });
+    const redirectLocation = authorizeResponse.headers.get("location");
+
+    assert.equal(authorizeResponse.status, 302);
+    assert(redirectLocation);
+
+    const redirected = new URL(redirectLocation);
+    const code = redirected.searchParams.get("code");
+    assert.equal(redirected.searchParams.get("state"), "state-1");
+    assert(code);
+
+    const tokenResponse = await fetch(`${baseUrl}/oauth/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "authorization_code",
+        code,
+        redirect_uri: authorizeParams.redirect_uri,
+        client_id: authorizeParams.client_id,
+        code_verifier: codeVerifier,
+      }),
+    });
+    const tokenBody = await tokenResponse.json();
+
+    assert.equal(tokenResponse.status, 200);
+    assert.equal(tokenBody.token_type, "Bearer");
+    assert.equal(typeof tokenBody.access_token, "string");
+    assert.deepEqual(provisions, [
+      {
+        siteId: site.id,
+        profile: {
+          sub: "google-sub-1",
+          email: "buyer@example.test",
+          name: "Buyer",
+          picture: "",
+        },
+      },
+    ]);
+
+    const toolResponse = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${tokenBody.access_token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 5,
+        method: "tools/call",
+        params: {
+          name: "client_catalog_search",
+          arguments: { query: "tea" },
+        },
+      }),
+    });
+    const toolBody = await toolResponse.json();
+
+    assert.equal(toolResponse.status, 200);
+    assert.equal(toolBody.result.content[0].type, "text");
+  });
 });
 
 async function withApp(

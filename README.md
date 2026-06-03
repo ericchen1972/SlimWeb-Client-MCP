@@ -45,6 +45,16 @@ https://<slimweb-client-mcp-host>/sites/{callback_code}/auth/google
 After Google verification, the service finds or creates a Webless `members`
 record for that site.
 
+ChatGPT Web remote MCP connections should use OAuth. The service exposes OAuth
+metadata at:
+
+```text
+https://<slimweb-client-mcp-host>/.well-known/oauth-authorization-server
+```
+
+The OAuth flow signs the customer in with Google, creates or links the Webless
+site member, and returns a bearer token that is accepted by the MCP endpoint.
+
 ## Configuration
 
 Set these environment variables before launching the MCP server:

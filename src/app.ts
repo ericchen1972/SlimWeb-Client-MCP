@@ -1,3 +1,4 @@
+import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 import type { ClientMcpConfig } from "./config.js";
@@ -7,10 +8,12 @@ import {
 } from "./google-verifier.js";
 import {
   createSessionToken,
+  createSignedToken,
   readSessionToken,
   sessionCookie,
   type ClientSessionPayload,
   verifySessionToken,
+  verifySignedToken,
 } from "./session.js";
 import {
   PostgresSiteMemberRepository,
@@ -53,6 +56,38 @@ export function createRequestHandler(options: RequestHandlerOptions) {
         return;
       }
 
+      if (isOAuthMetadataPath(url.pathname)) {
+        handleOAuthMetadata(request, response, options);
+        return;
+      }
+
+      if (url.pathname === "/oauth/register") {
+        await handleOAuthRegister(request, response);
+        return;
+      }
+
+      if (url.pathname === "/oauth/authorize") {
+        await handleOAuthAuthorize(request, response, options);
+        return;
+      }
+
+      if (url.pathname === "/oauth/google") {
+        await handleOAuthGoogle(
+          request,
+          response,
+          options,
+          verifier,
+          repository,
+          sessionSecret,
+        );
+        return;
+      }
+
+      if (url.pathname === "/oauth/token") {
+        await handleOAuthToken(request, response, sessionSecret);
+        return;
+      }
+
       const siteRoute = matchSiteRoute(url.pathname);
 
       if (!siteRoute) {
@@ -88,6 +123,226 @@ export function createRequestHandler(options: RequestHandlerOptions) {
       });
     }
   };
+}
+
+function isOAuthMetadataPath(pathname: string): boolean {
+  return [
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration",
+    "/.well-known/oauth-protected-resource",
+  ].some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
+}
+
+function handleOAuthMetadata(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: RequestHandlerOptions,
+): void {
+  if (request.method !== "GET") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const issuer = publicBaseUrl(request, options);
+  const requestUrl = new URL(request.url ?? "/", issuer);
+  const resource = metadataResourceFromPath(requestUrl.pathname, issuer) ?? issuer;
+
+  jsonResponse(response, 200, {
+    issuer,
+    authorization_endpoint: `${issuer}/oauth/authorize`,
+    token_endpoint: `${issuer}/oauth/token`,
+    registration_endpoint: `${issuer}/oauth/register`,
+    jwks_uri: `${issuer}/oauth/jwks`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    token_endpoint_auth_methods_supported: ["none"],
+    code_challenge_methods_supported: ["S256", "plain"],
+    scopes_supported: ["mcp"],
+    resource,
+    authorization_servers: [issuer],
+  });
+}
+
+async function handleOAuthRegister(
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  if (request.method !== "POST") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const body = await readAnyRequest(request);
+  const redirectUris = arrayOfStrings(body.redirect_uris) ?? [];
+
+  jsonResponse(response, 201, {
+    client_id: `slimweb-client-mcp-${randomBytes(8).toString("hex")}`,
+    client_name: stringValue(body.client_name) ?? "ChatGPT",
+    redirect_uris: redirectUris,
+    grant_types: ["authorization_code"],
+    response_types: ["code"],
+    token_endpoint_auth_method: "none",
+  });
+}
+
+async function handleOAuthAuthorize(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: RequestHandlerOptions,
+): Promise<void> {
+  if (request.method !== "GET") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const url = new URL(request.url ?? "/", publicBaseUrl(request, options));
+  const params = oauthParamsFromSearch(url.searchParams);
+  const validation = validateOAuthAuthorizeParams(params);
+
+  if (validation) {
+    htmlResponse(response, 400, `<p>${escapeHtml(validation)}</p>`);
+    return;
+  }
+
+  const siteCode = siteCodeFromResource(params.resource);
+
+  if (!siteCode) {
+    htmlResponse(response, 400, "<p>Missing SlimWeb site MCP resource.</p>");
+    return;
+  }
+
+  htmlResponse(response, 200, googleSignInPage(params, options));
+}
+
+async function handleOAuthGoogle(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: RequestHandlerOptions,
+  verifier: GoogleVerifier,
+  repository: SiteMemberRepository,
+  sessionSecret: string,
+): Promise<void> {
+  if (request.method !== "POST") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const body = await readAnyRequest(request);
+  const params = oauthParamsFromRecord(body);
+  const validation = validateOAuthAuthorizeParams(params);
+
+  if (validation) {
+    htmlResponse(response, 400, `<p>${escapeHtml(validation)}</p>`);
+    return;
+  }
+
+  const siteCode = siteCodeFromResource(params.resource);
+
+  if (!siteCode) {
+    htmlResponse(response, 400, "<p>Missing SlimWeb site MCP resource.</p>");
+    return;
+  }
+
+  const site = await repository.findSiteByCallbackCode(siteCode);
+
+  if (!site) {
+    htmlResponse(response, 404, "<p>Unknown SlimWeb site MCP code.</p>");
+    return;
+  }
+
+  const credential = stringValue(body.credential) ?? "";
+  const profile = await verifier.verify(credential);
+  const member = await repository.provisionMember(site.id, profile);
+  const accessToken = createSessionToken(
+    {
+      site_id: site.id,
+      callback_code: site.callbackCode,
+      member_id: member.id,
+      email: member.email,
+      google_id: member.googleId,
+    },
+    sessionSecret,
+  );
+  const code = createSignedToken(
+    {
+      typ: "oauth_code",
+      client_id: params.clientId,
+      redirect_uri: params.redirectUri,
+      code_challenge: params.codeChallenge,
+      code_challenge_method: params.codeChallengeMethod,
+      access_token: accessToken,
+      exp: Math.floor(Date.now() / 1000) + 10 * 60,
+    },
+    sessionSecret,
+  );
+  const redirectUrl = new URL(params.redirectUri);
+  redirectUrl.searchParams.set("code", code);
+
+  if (params.state) {
+    redirectUrl.searchParams.set("state", params.state);
+  }
+
+  redirectResponse(response, redirectUrl.toString(), {
+    "set-cookie": sessionCookie(accessToken, process.env.NODE_ENV === "production"),
+  });
+}
+
+async function handleOAuthToken(
+  request: IncomingMessage,
+  response: ServerResponse,
+  sessionSecret: string,
+): Promise<void> {
+  if (request.method !== "POST") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const body = await readAnyRequest(request);
+
+  if (stringValue(body.grant_type) !== "authorization_code") {
+    jsonResponse(response, 400, { error: "unsupported_grant_type" });
+    return;
+  }
+
+  const code = stringValue(body.code) ?? "";
+  const payload = verifySignedToken(code, sessionSecret);
+
+  if (
+    !payload ||
+    payload.typ !== "oauth_code" ||
+    typeof payload.exp !== "number" ||
+    payload.exp < Math.floor(Date.now() / 1000) ||
+    typeof payload.access_token !== "string" ||
+    typeof payload.redirect_uri !== "string" ||
+    typeof payload.client_id !== "string" ||
+    typeof payload.code_challenge !== "string" ||
+    typeof payload.code_challenge_method !== "string"
+  ) {
+    jsonResponse(response, 400, { error: "invalid_grant" });
+    return;
+  }
+
+  if (
+    stringValue(body.redirect_uri) !== payload.redirect_uri ||
+    stringValue(body.client_id) !== payload.client_id
+  ) {
+    jsonResponse(response, 400, { error: "invalid_grant" });
+    return;
+  }
+
+  const verifier = stringValue(body.code_verifier) ?? "";
+
+  if (!verifyPkce(verifier, payload.code_challenge, payload.code_challenge_method)) {
+    jsonResponse(response, 400, { error: "invalid_grant" });
+    return;
+  }
+
+  jsonResponse(response, 200, {
+    token_type: "Bearer",
+    access_token: payload.access_token,
+    expires_in: 60 * 60 * 24 * 7,
+    scope: "mcp",
+  });
 }
 
 async function handleGoogleLogin(
@@ -284,6 +539,31 @@ async function readJsonRequest(request: IncomingMessage): Promise<Record<string,
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+async function readAnyRequest(request: IncomingMessage): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  if (chunks.length === 0) {
+    return {};
+  }
+
+  const text = Buffer.concat(chunks).toString("utf8");
+  const contentType = request.headers["content-type"] ?? "";
+
+  if (contentType.includes("application/x-www-form-urlencoded")) {
+    return Object.fromEntries(new URLSearchParams(text).entries());
+  }
+
+  if (contentType.includes("application/json")) {
+    return JSON.parse(text);
+  }
+
+  return Object.fromEntries(new URLSearchParams(text).entries());
+}
+
 function jsonResponse(
   response: ServerResponse,
   status: number,
@@ -297,6 +577,29 @@ function jsonResponse(
   response.end(JSON.stringify(body));
 }
 
+function htmlResponse(
+  response: ServerResponse,
+  status: number,
+  body: string,
+): void {
+  response.writeHead(status, {
+    "content-type": "text/html; charset=utf-8",
+  });
+  response.end(`<!doctype html><html><head><meta charset="utf-8"><title>SlimWeb Client MCP</title></head><body>${body}</body></html>`);
+}
+
+function redirectResponse(
+  response: ServerResponse,
+  location: string,
+  headers: Record<string, string> = {},
+): void {
+  response.writeHead(302, {
+    location,
+    ...headers,
+  });
+  response.end();
+}
+
 function methodNotAllowed(response: ServerResponse): void {
   jsonResponse(response, 405, { ok: false, error: "Method not allowed" });
 }
@@ -307,4 +610,173 @@ function mcpResult(id: unknown, result: unknown) {
 
 function mcpError(id: unknown, code: number, message: string) {
   return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+interface OAuthAuthorizeParams {
+  clientId: string;
+  redirectUri: string;
+  responseType: string;
+  state: string;
+  resource: string;
+  codeChallenge: string;
+  codeChallengeMethod: string;
+}
+
+function oauthParamsFromSearch(searchParams: URLSearchParams): OAuthAuthorizeParams {
+  return {
+    clientId: searchParams.get("client_id") ?? "",
+    redirectUri: searchParams.get("redirect_uri") ?? "",
+    responseType: searchParams.get("response_type") ?? "",
+    state: searchParams.get("state") ?? "",
+    resource: searchParams.get("resource") ?? "",
+    codeChallenge: searchParams.get("code_challenge") ?? "",
+    codeChallengeMethod: searchParams.get("code_challenge_method") ?? "plain",
+  };
+}
+
+function oauthParamsFromRecord(record: Record<string, unknown>): OAuthAuthorizeParams {
+  return {
+    clientId: stringValue(record.client_id) ?? "",
+    redirectUri: stringValue(record.redirect_uri) ?? "",
+    responseType: stringValue(record.response_type) ?? "",
+    state: stringValue(record.state) ?? "",
+    resource: stringValue(record.resource) ?? "",
+    codeChallenge: stringValue(record.code_challenge) ?? "",
+    codeChallengeMethod: stringValue(record.code_challenge_method) ?? "plain",
+  };
+}
+
+function validateOAuthAuthorizeParams(params: OAuthAuthorizeParams): string | null {
+  if (!params.clientId) return "Missing OAuth client_id.";
+  if (!params.redirectUri) return "Missing OAuth redirect_uri.";
+  if (params.responseType !== "code") return "Unsupported OAuth response_type.";
+  if (!params.resource) return "Missing OAuth resource.";
+  if (!params.codeChallenge) return "Missing OAuth PKCE code_challenge.";
+  if (!["S256", "plain"].includes(params.codeChallengeMethod)) {
+    return "Unsupported OAuth PKCE code_challenge_method.";
+  }
+
+  try {
+    new URL(params.redirectUri);
+    new URL(params.resource);
+  } catch {
+    return "Invalid OAuth URL parameter.";
+  }
+
+  return null;
+}
+
+function siteCodeFromResource(resource: string): string | null {
+  try {
+    const url = new URL(resource);
+    const match = url.pathname.match(/^\/sites\/([^/]+)\/mcp$/);
+
+    return match ? decodeURIComponent(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
+function googleSignInPage(
+  params: OAuthAuthorizeParams,
+  options: RequestHandlerOptions,
+): string {
+  const clientId = options.config.googleClientId ??
+    "27587628711-upin8ch154kqrl88k41978q660oc0pbg.apps.googleusercontent.com";
+  const hiddenInputs = [
+    ["client_id", params.clientId],
+    ["redirect_uri", params.redirectUri],
+    ["response_type", params.responseType],
+    ["state", params.state],
+    ["resource", params.resource],
+    ["code_challenge", params.codeChallenge],
+    ["code_challenge_method", params.codeChallengeMethod],
+  ]
+    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
+    .join("");
+
+  return `
+    <main style="font-family: system-ui, sans-serif; max-width: 420px; margin: 48px auto; line-height: 1.5;">
+      <h1>SlimWeb Client MCP</h1>
+      <p>請使用 Google 登入以連接此站台的消費者 MCP。</p>
+      <script src="https://accounts.google.com/gsi/client" async defer></script>
+      <form id="oauth-form" method="post" action="/oauth/google">
+        ${hiddenInputs}
+        <input type="hidden" id="credential" name="credential">
+      </form>
+      <div id="g_id_onload"
+        data-client_id="${escapeHtml(clientId)}"
+        data-context="signin"
+        data-ux_mode="popup"
+        data-callback="slimwebClientMcpGoogle"
+        data-auto_prompt="false"></div>
+      <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="signin_with" data-shape="rectangular"></div>
+      <script>
+        function slimwebClientMcpGoogle(response) {
+          document.getElementById('credential').value = response.credential;
+          document.getElementById('oauth-form').submit();
+        }
+      </script>
+    </main>
+  `;
+}
+
+function verifyPkce(
+  verifier: string,
+  challenge: string,
+  method: string,
+): boolean {
+  if (!verifier) return false;
+  if (method === "plain") return verifier === challenge;
+
+  return createHash("sha256").update(verifier).digest("base64url") === challenge;
+}
+
+function publicBaseUrl(
+  request: IncomingMessage,
+  options: RequestHandlerOptions,
+): string {
+  if (options.config.publicBaseUrl) {
+    return options.config.publicBaseUrl;
+  }
+
+  const proto = String(request.headers["x-forwarded-proto"] ?? "http").split(",")[0].trim();
+  const host = request.headers.host ?? "localhost";
+
+  return `${proto}://${host}`;
+}
+
+function metadataResourceFromPath(pathname: string, issuer: string): string | null {
+  for (const prefix of [
+    "/.well-known/oauth-authorization-server",
+    "/.well-known/openid-configuration",
+    "/.well-known/oauth-protected-resource",
+  ]) {
+    if (pathname.startsWith(`${prefix}/`)) {
+      const resourcePath = pathname.slice(prefix.length);
+
+      return `${issuer}${resourcePath}`;
+    }
+  }
+
+  return null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function arrayOfStrings(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : undefined;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }

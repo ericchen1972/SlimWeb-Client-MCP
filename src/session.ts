@@ -103,7 +103,7 @@ export function sessionCookie(token: string, secure = true): string {
   return attributes.join("; ");
 }
 
-function verifySignedToken(token: string, secret: string): Record<string, unknown> | null {
+export function verifySignedToken(token: string, secret: string): Record<string, unknown> | null {
   if (!token || !secret || !token.includes(".")) {
     return null;
   }
