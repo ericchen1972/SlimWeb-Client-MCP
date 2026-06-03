@@ -423,7 +423,7 @@ async function handleMcp(
 
   let session: ClientSessionPayload | null = null;
 
-  if (message.method === "tools/call") {
+  if (["tools/list", "tools/call"].includes(String(message.method))) {
     session = verifySessionToken(
       readSessionToken({
         authorization: request.headers.authorization,
@@ -433,7 +433,14 @@ async function handleMcp(
     );
 
     if (!session || session.callback_code !== site.callbackCode || session.site_id !== site.id) {
-      jsonResponse(response, 401, mcpError(message.id ?? null, -32001, "Google login required for this site MCP."));
+      jsonResponse(
+        response,
+        401,
+        mcpError(message.id ?? null, -32001, "Google login required for this site MCP."),
+        {
+          "www-authenticate": protectedResourceChallenge(request, site),
+        },
+      );
       return;
     }
   }
@@ -744,6 +751,17 @@ function publicBaseUrl(
   const host = request.headers.host ?? "localhost";
 
   return `${proto}://${host}`;
+}
+
+function protectedResourceChallenge(
+  request: IncomingMessage,
+  site: ClientSite,
+): string {
+  const proto = String(request.headers["x-forwarded-proto"] ?? "http").split(",")[0].trim();
+  const host = request.headers.host ?? "localhost";
+  const resourceMetadataUrl = `${proto}://${host}/.well-known/oauth-protected-resource/sites/${encodeURIComponent(site.callbackCode)}/mcp`;
+
+  return `Bearer resource_metadata="${resourceMetadataUrl}"`;
 }
 
 function metadataResourceFromPath(pathname: string, issuer: string): string | null {

@@ -62,9 +62,9 @@ test("Google login provisions a site member for the callback-code route", async 
   });
 });
 
-test("site MCP tools/list is routed by callback code", async () => {
-  await withApp(fakeRepository(), async (baseUrl) => {
-    const response = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+test("site MCP tools/list requires a session scoped to the same callback code", async () => {
+  await withApp(fakeRepository(), async (baseUrl, sessionSecret) => {
+    const unauthenticated = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -73,8 +73,38 @@ test("site MCP tools/list is routed by callback code", async () => {
         method: "tools/list",
       }),
     });
+    const unauthenticatedBody = await unauthenticated.json();
+    const token = createSignedToken(
+      {
+        site_id: site.id,
+        callback_code: site.callbackCode,
+        member_id: member.id,
+        email: member.email,
+        google_id: member.googleId,
+        exp: Math.floor(Date.now() / 1000) + 60,
+      },
+      sessionSecret,
+    );
+    const response = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/list",
+      }),
+    });
     const body = await response.json();
 
+    assert.equal(unauthenticated.status, 401);
+    assert.equal(unauthenticatedBody.error.code, -32001);
+    assert.match(
+      unauthenticated.headers.get("www-authenticate") ?? "",
+      /oauth-protected-resource/,
+    );
     assert.equal(response.status, 200);
     assert.equal(body.result.tools[0].name, "client_catalog_search");
   });
