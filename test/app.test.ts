@@ -76,8 +76,38 @@ test("site MCP tools/list is routed by callback code", async () => {
     const body = await response.json();
 
     assert.equal(response.status, 200);
-    assert.equal(body.result.tools[0].name, "client_catalog_search");
+    assert.deepEqual(
+      body.result.tools.map((tool: { name: string }) => tool.name),
+      [
+        "client_catalog_overview",
+        "client_catalog_search",
+        "client_product_detail",
+        "client_order_lookup",
+      ],
+    );
   });
+});
+
+test("site MCP storefront catalog overview can be called without a session", async () => {
+  await withApp(fakeRepository(), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "client_catalog_overview",
+          arguments: {},
+        },
+      }),
+    });
+    const body = await response.json();
+
+    assert.equal(response.status, 200);
+    assert.equal(body.result.content[0].type, "text");
+  }, async () => Response.json({ categories: [{ name: "機械錶" }] }));
 });
 
 test("site MCP storefront catalog tools can be called without a session", async () => {

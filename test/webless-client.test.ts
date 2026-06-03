@@ -3,6 +3,27 @@ import test from "node:test";
 
 import { WeblessClient } from "../src/webless-client.js";
 
+test("getCatalogOverview sends site key to the storefront overview endpoint", async () => {
+  const requests: Request[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    fetchImpl: async (input) => {
+      requests.push(input as Request);
+      return Response.json({ categories: [{ name: "機械錶" }] });
+    },
+  });
+
+  const result = await client.getCatalogOverview();
+
+  assert.equal(requests.length, 1);
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/catalog/overview?site=site-1",
+  );
+  assert.deepEqual(result, { categories: [{ name: "機械錶" }] });
+});
+
 test("searchCatalog sends query and site key to the storefront search endpoint", async () => {
   const requests: Request[] = [];
   const client = new WeblessClient({

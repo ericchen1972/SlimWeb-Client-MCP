@@ -5,6 +5,7 @@ import { createToolRegistry } from "../src/tools.js";
 
 test("tool registry exposes only consumer-facing tools", () => {
   const registry = createToolRegistry({
+    getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async () => ({ items: [] }),
     getProductDetail: async () => ({ product: null }),
     getOrderSummary: async () => ({ order: null }),
@@ -12,12 +13,42 @@ test("tool registry exposes only consumer-facing tools", () => {
 
   assert.deepEqual(
     registry.listTools().map((tool) => tool.name),
-    ["client_catalog_search", "client_product_detail", "client_order_lookup"],
+    [
+      "client_catalog_overview",
+      "client_catalog_search",
+      "client_product_detail",
+      "client_order_lookup",
+    ],
   );
+});
+
+test("client_catalog_overview dispatches to Webless catalog overview", async () => {
+  const registry = createToolRegistry({
+    getCatalogOverview: async () => ({
+      categories: [{ name: "機械錶", path: ["精品手錶", "機械錶"] }],
+    }),
+    searchCatalog: async () => ({ items: [] }),
+    getProductDetail: async () => ({ product: null }),
+    getOrderSummary: async () => ({ order: null }),
+  });
+
+  const result = await registry.callTool("client_catalog_overview", {});
+
+  assert.deepEqual(result, {
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify({
+          categories: [{ name: "機械錶", path: ["精品手錶", "機械錶"] }],
+        }, null, 2),
+      },
+    ],
+  });
 });
 
 test("client_catalog_search dispatches to Webless catalog search", async () => {
   const registry = createToolRegistry({
+    getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async (input) => ({ received: input }),
     getProductDetail: async () => ({ product: null }),
     getOrderSummary: async () => ({ order: null }),
@@ -40,6 +71,7 @@ test("client_catalog_search dispatches to Webless catalog search", async () => {
 
 test("unknown tools are rejected", async () => {
   const registry = createToolRegistry({
+    getCatalogOverview: async () => ({ categories: [] }),
     searchCatalog: async () => ({ items: [] }),
     getProductDetail: async () => ({ product: null }),
     getOrderSummary: async () => ({ order: null }),

@@ -33,6 +33,13 @@ export class WeblessClient {
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
+  getCatalogOverview(): Promise<WeblessJson> {
+    const url = this.url("/api/storefront/catalog/overview");
+    this.appendSite(url);
+
+    return this.getJson(url);
+  }
+
   searchCatalog(input: CatalogSearchInput): Promise<WeblessJson> {
     const url = this.url("/api/storefront/catalog/search");
     url.searchParams.set("q", input.query);

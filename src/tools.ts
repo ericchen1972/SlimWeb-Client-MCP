@@ -8,6 +8,7 @@ import type {
 } from "./webless-client.js";
 
 export interface ConsumerWeblessClient {
+  getCatalogOverview(): Promise<WeblessJson>;
   searchCatalog(input: CatalogSearchInput): Promise<WeblessJson>;
   getProductDetail(input: ProductDetailInput): Promise<WeblessJson>;
   getOrderSummary(input: OrderSummaryInput): Promise<WeblessJson>;
@@ -38,6 +39,8 @@ const catalogSearchSchema = {
   limit: z.number().int().min(1).max(50).optional(),
 } satisfies ZodRawShape;
 
+const catalogOverviewSchema = {} satisfies ZodRawShape;
+
 const productDetailSchema = {
   productId: z.string().trim().min(1),
 } satisfies ZodRawShape;
@@ -49,9 +52,18 @@ const orderLookupSchema = {
 export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry {
   const definitions = [
     {
+      name: "client_catalog_overview",
+      title: "Get storefront catalog overview",
+      description:
+        "Retrieve customer-visible storefront category paths and product counts. Use this before product search when the shopper's request is broad or ambiguous, then ask the shopper to choose if multiple categories could match.",
+      inputSchema: catalogOverviewSchema,
+      handler: () => client.getCatalogOverview(),
+    },
+    {
       name: "client_catalog_search",
       title: "Search storefront catalog",
-      description: "Search customer-visible Webless storefront catalog data.",
+      description:
+        "Search customer-visible Webless storefront products by product text or category. If the shopper has not specified enough detail and catalog overview shows multiple plausible categories, ask a short clarification before calling this tool.",
       inputSchema: catalogSearchSchema,
       handler: (args: unknown) =>
         client.searchCatalog(z.object(catalogSearchSchema).parse(args)),

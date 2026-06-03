@@ -10,7 +10,11 @@ This repo is separate from:
 
 ## Tools
 
-- `client_catalog_search`: search customer-visible storefront catalog data.
+- `client_catalog_overview`: list customer-visible storefront category paths
+  and product counts. AI clients should use this first when a shopper's request
+  is broad or ambiguous.
+- `client_catalog_search`: search customer-visible storefront products by
+  product text or category after the shopper intent is clear.
 - `client_product_detail`: fetch a customer-visible product detail.
 - `client_order_lookup`: fetch a customer-visible order summary by token.
 
