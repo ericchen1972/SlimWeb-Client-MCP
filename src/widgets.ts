@@ -1,5 +1,6 @@
 export const PRODUCT_LIST_WIDGET_URI = "ui://widget/product-list.html";
 export const MCP_APP_HTML_MIME_TYPE = "text/html;profile=mcp-app";
+export const PRODUCT_LIST_WIDGET_DOMAIN = "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app";
 
 const PRODUCT_LIST_WIDGET_HTML = `
 <div id="root" class="slimweb-products" aria-live="polite">
@@ -253,9 +254,11 @@ export function productListWidgetContents() {
       ui: {
         prefersBorder: true,
         csp,
+        domain: PRODUCT_LIST_WIDGET_DOMAIN,
       },
       "openai/widgetDescription": "SlimWeb storefront product search results with images, prices, and product links.",
       "openai/widgetPrefersBorder": true,
+      "openai/widgetDomain": PRODUCT_LIST_WIDGET_DOMAIN,
       "openai/widgetCSP": {
         connect_domains: csp.connectDomains,
         resource_domains: csp.resourceDomains,

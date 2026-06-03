@@ -132,6 +132,14 @@ test("site MCP product list widget resource can be listed and read", async () =>
     assert.match(readBody.result.contents[0].text, /openai:set_globals/);
     assert.match(readBody.result.contents[0].text, /toolResponseMetadata/);
     assert.match(readBody.result.contents[0].text, /Waiting for product data/);
+    assert.equal(
+      readBody.result.contents[0]._meta.ui.domain,
+      "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app",
+    );
+    assert.equal(
+      readBody.result.contents[0]._meta["openai/widgetDomain"],
+      "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app",
+    );
     assert.deepEqual(
       readBody.result.contents[0]._meta.ui.csp.resourceDomains,
       [
