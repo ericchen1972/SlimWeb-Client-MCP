@@ -100,6 +100,10 @@ const PRODUCT_LIST_WIDGET_HTML = `
         return candidate;
       }
 
+      if (objectValue(candidate.product)) {
+        return { ...candidate, items: [candidate.product] };
+      }
+
       queue.push(
         candidate.structuredContent,
         candidate.toolOutput,

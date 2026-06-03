@@ -121,6 +121,14 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
       title: "Get storefront product detail",
       description: "Retrieve customer-visible detail for one storefront product.",
       inputSchema: productDetailSchema,
+      _meta: {
+        ui: {
+          resourceUri: PRODUCT_LIST_WIDGET_URI,
+          visibility: ["model", "app"],
+        },
+        "openai/outputTemplate": PRODUCT_LIST_WIDGET_URI,
+        "openai/widgetAccessible": true,
+      },
       handler: (args: unknown) =>
         client.getProductDetail(z.object(productDetailSchema).parse(args)),
     },
