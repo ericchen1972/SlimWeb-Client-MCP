@@ -70,6 +70,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
 </style>
 <script>
   const root = document.getElementById("root");
+  let rendered = false;
 
   function text(value, fallback = "") {
     return typeof value === "string" && value.trim() ? value : fallback;
@@ -79,8 +80,60 @@ const PRODUCT_LIST_WIDGET_HTML = `
     return text(item?.price?.formatted) || text(item?.regular_price?.formatted);
   }
 
+  function objectValue(value) {
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function productPayload(value) {
+    const seen = new Set();
+    const queue = [value];
+
+    while (queue.length > 0) {
+      const candidate = objectValue(queue.shift());
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+
+      if (Array.isArray(candidate.items)) {
+        return candidate;
+      }
+
+      queue.push(
+        candidate.structuredContent,
+        candidate.toolOutput,
+        candidate.toolResponse,
+        candidate.toolResponseMetadata,
+        candidate.call_tool_result,
+        candidate.mcp_tool_result,
+        candidate.result,
+        candidate.params,
+        candidate.globals,
+      );
+    }
+
+    return null;
+  }
+
+  function readOpenAiPayload() {
+    return productPayload({
+      toolOutput: window.openai?.toolOutput,
+      toolResponseMetadata: window.openai?.toolResponseMetadata,
+    });
+  }
+
+  function renderWaiting() {
+    root.innerHTML = '<div class="empty">Waiting for product data...</div>';
+    window.openai?.notifyIntrinsicHeight?.();
+  }
+
   function render(payload) {
-    const items = Array.isArray(payload?.items) ? payload.items.slice(0, 5) : [];
+    const normalizedPayload = productPayload(payload);
+    if (!normalizedPayload) {
+      renderWaiting();
+      return;
+    }
+
+    rendered = true;
+    const items = normalizedPayload.items.slice(0, 5);
     if (items.length === 0) {
       root.innerHTML = '<div class="empty">No matching products found.</div>';
       window.openai?.notifyIntrinsicHeight?.();
@@ -138,14 +191,29 @@ const PRODUCT_LIST_WIDGET_HTML = `
     window.openai?.notifyIntrinsicHeight?.();
   }
 
-  render(window.openai?.toolOutput);
+  render(readOpenAiPayload());
+
+  let pollCount = 0;
+  const pollForGlobals = window.setInterval(() => {
+    if (rendered || pollCount >= 20) {
+      window.clearInterval(pollForGlobals);
+      return;
+    }
+
+    pollCount += 1;
+    render(readOpenAiPayload());
+  }, 100);
+
+  window.addEventListener("openai:set_globals", (event) => {
+    render(productPayload(event.detail));
+  }, { passive: true });
 
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent) return;
     const message = event.data;
     if (!message || message.jsonrpc !== "2.0") return;
-    if (message.method !== "ui/notifications/tool-result") return;
-    render(message.params?.structuredContent);
+    if (message.method !== "ui/notifications/tool-result" && message.method !== "ui/notifications/tool-input") return;
+    render(message.params);
   }, { passive: true });
 </script>
 `.trim();
@@ -171,6 +239,9 @@ export function productListWidgetContents() {
       "https://i2.momoshop.com.tw",
       "https://i3.momoshop.com.tw",
       "https://i4.momoshop.com.tw",
+      "https://img1.momoshop.com.tw",
+      "https://img2.momoshop.com.tw",
+      "https://img3.momoshop.com.tw",
     ],
   };
 

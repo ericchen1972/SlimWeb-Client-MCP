@@ -129,6 +129,9 @@ test("site MCP product list widget resource can be listed and read", async () =>
     assert.equal(readResponse.status, 200);
     assert.equal(readBody.result.contents[0].mimeType, "text/html;profile=mcp-app");
     assert.match(readBody.result.contents[0].text, /slimweb-products/);
+    assert.match(readBody.result.contents[0].text, /openai:set_globals/);
+    assert.match(readBody.result.contents[0].text, /toolResponseMetadata/);
+    assert.match(readBody.result.contents[0].text, /Waiting for product data/);
     assert.deepEqual(
       readBody.result.contents[0]._meta.ui.csp.resourceDomains,
       [
@@ -137,6 +140,9 @@ test("site MCP product list widget resource can be listed and read", async () =>
         "https://i2.momoshop.com.tw",
         "https://i3.momoshop.com.tw",
         "https://i4.momoshop.com.tw",
+        "https://img1.momoshop.com.tw",
+        "https://img2.momoshop.com.tw",
+        "https://img3.momoshop.com.tw",
       ],
     );
   });
