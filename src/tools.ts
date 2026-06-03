@@ -106,8 +106,10 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
       _meta: {
         ui: {
           resourceUri: PRODUCT_LIST_WIDGET_URI,
+          visibility: ["model", "app"],
         },
         "openai/outputTemplate": PRODUCT_LIST_WIDGET_URI,
+        "openai/widgetAccessible": true,
         "openai/toolInvocation/invoking": "Searching products...",
         "openai/toolInvocation/invoked": "Products ready",
       },

@@ -72,6 +72,8 @@ const PRODUCT_LIST_WIDGET_HTML = `
 <script>
   const root = document.getElementById("root");
   let rendered = false;
+  let fallbackStarted = false;
+  let latestToolInput = null;
 
   function text(value, fallback = "") {
     return typeof value === "string" && value.trim() ? value : fallback;
@@ -114,6 +116,31 @@ const PRODUCT_LIST_WIDGET_HTML = `
     return null;
   }
 
+  function toolInputPayload(value) {
+    const seen = new Set();
+    const queue = [value];
+
+    while (queue.length > 0) {
+      const candidate = objectValue(queue.shift());
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+
+      if (typeof candidate.query === "string" && candidate.query.trim()) {
+        return candidate;
+      }
+
+      queue.push(
+        candidate.toolInput,
+        candidate.input,
+        candidate.arguments,
+        candidate.params,
+        candidate.globals,
+      );
+    }
+
+    return null;
+  }
+
   function readOpenAiPayload() {
     return productPayload({
       toolOutput: window.openai?.toolOutput,
@@ -121,9 +148,36 @@ const PRODUCT_LIST_WIDGET_HTML = `
     });
   }
 
+  function readOpenAiInput() {
+    return toolInputPayload({
+      toolInput: window.openai?.toolInput,
+      toolResponseMetadata: window.openai?.toolResponseMetadata,
+    });
+  }
+
   function renderWaiting() {
     root.innerHTML = '<div class="empty">Waiting for product data...</div>';
     window.openai?.notifyIntrinsicHeight?.();
+  }
+
+  function rememberToolInput(payload) {
+    latestToolInput = toolInputPayload(payload) || latestToolInput;
+  }
+
+  async function loadProductsFromWidget() {
+    if (rendered || fallbackStarted || !latestToolInput || !window.openai?.callTool) return;
+
+    fallbackStarted = true;
+    root.innerHTML = '<div class="empty">Loading product cards...</div>';
+    window.openai.notifyIntrinsicHeight?.();
+
+    try {
+      const result = await window.openai.callTool("client_catalog_search", latestToolInput);
+      render(result);
+    } catch {
+      root.innerHTML = '<div class="empty">Product data was returned, but the widget bridge did not deliver it.</div>';
+      window.openai.notifyIntrinsicHeight?.();
+    }
   }
 
   function render(payload) {
@@ -192,28 +246,37 @@ const PRODUCT_LIST_WIDGET_HTML = `
     window.openai?.notifyIntrinsicHeight?.();
   }
 
+  rememberToolInput(readOpenAiInput());
   render(readOpenAiPayload());
 
   let pollCount = 0;
   const pollForGlobals = window.setInterval(() => {
     if (rendered || pollCount >= 20) {
       window.clearInterval(pollForGlobals);
+      loadProductsFromWidget();
       return;
     }
 
     pollCount += 1;
+    rememberToolInput(readOpenAiInput());
     render(readOpenAiPayload());
   }, 100);
 
   window.addEventListener("openai:set_globals", (event) => {
-    render(productPayload(event.detail));
+    rememberToolInput(event.detail);
+    render(event.detail);
+    window.setTimeout(loadProductsFromWidget, 250);
   }, { passive: true });
 
   window.addEventListener("message", (event) => {
-    if (event.source !== window.parent) return;
     const message = event.data;
     if (!message || message.jsonrpc !== "2.0") return;
-    if (message.method !== "ui/notifications/tool-result" && message.method !== "ui/notifications/tool-input") return;
+    if (message.method === "ui/notifications/tool-input") {
+      rememberToolInput(message.params);
+      window.setTimeout(loadProductsFromWidget, 250);
+      return;
+    }
+    if (message.method !== "ui/notifications/tool-result") return;
     render(message.params);
   }, { passive: true });
 </script>

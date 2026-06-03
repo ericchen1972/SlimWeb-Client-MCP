@@ -90,7 +90,9 @@ test("site MCP tools/list is routed by callback code", async () => {
     assert.equal(searchTool.inputSchema.properties.minPrice.type, "number");
     assert.equal(searchTool.inputSchema.properties.freshness.enum[0], "latest");
     assert.equal(searchTool._meta.ui.resourceUri, "ui://widget/product-list.html");
+    assert.deepEqual(searchTool._meta.ui.visibility, ["model", "app"]);
     assert.equal(searchTool._meta["openai/outputTemplate"], "ui://widget/product-list.html");
+    assert.equal(searchTool._meta["openai/widgetAccessible"], true);
     assert.equal(searchTool.outputSchema.properties.items.maxItems, 5);
   });
 });
@@ -131,6 +133,7 @@ test("site MCP product list widget resource can be listed and read", async () =>
     assert.match(readBody.result.contents[0].text, /slimweb-products/);
     assert.match(readBody.result.contents[0].text, /openai:set_globals/);
     assert.match(readBody.result.contents[0].text, /toolResponseMetadata/);
+    assert.match(readBody.result.contents[0].text, /callTool\("client_catalog_search"/);
     assert.match(readBody.result.contents[0].text, /Waiting for product data/);
     assert.equal(
       readBody.result.contents[0]._meta.ui.domain,
