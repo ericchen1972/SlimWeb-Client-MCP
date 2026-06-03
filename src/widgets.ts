@@ -68,12 +68,41 @@ const PRODUCT_LIST_WIDGET_HTML = `
     font-size: 13px;
     color: color-mix(in srgb, CanvasText 62%, transparent);
   }
+  .diagnostics {
+    grid-column: 1 / -1;
+    margin-top: -6px;
+    padding: 12px 16px;
+    border: 1px dashed color-mix(in srgb, CanvasText 22%, transparent);
+    border-radius: 8px;
+    color: color-mix(in srgb, CanvasText 70%, transparent);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .diagnostics-title {
+    margin: 0 0 8px;
+    font-size: 12px;
+    font-weight: 700;
+    color: CanvasText;
+  }
+  .diagnostics-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+    padding-top: 5px;
+    margin-top: 5px;
+  }
+  .diagnostics-row span:last-child {
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
 </style>
 <script>
   const root = document.getElementById("root");
   let rendered = false;
   let fallbackStarted = false;
   let latestToolInput = null;
+  const lastEvents = [];
 
   function text(value, fallback = "") {
     return typeof value === "string" && value.trim() ? value : fallback;
@@ -159,8 +188,40 @@ const PRODUCT_LIST_WIDGET_HTML = `
     });
   }
 
+  function rememberEvent(name, detail) {
+    const keys = objectValue(detail) ? Object.keys(detail).slice(0, 8).join(",") : typeof detail;
+    lastEvents.push(keys ? name + "(" + keys + ")" : name);
+    if (lastEvents.length > 6) lastEvents.shift();
+  }
+
+  function yesNo(value) {
+    return value ? "yes" : "no";
+  }
+
+  function diagnosticsHtml(note = "") {
+    const openai = objectValue(window.openai);
+    const rows = [
+      ["window.openai", yesNo(openai)],
+      ["toolInput", yesNo(window.openai?.toolInput)],
+      ["toolOutput", yesNo(window.openai?.toolOutput)],
+      ["toolResponseMetadata", yesNo(window.openai?.toolResponseMetadata)],
+      ["callTool", typeof window.openai?.callTool === "function" ? "yes" : "no"],
+      ["latestToolInput", yesNo(latestToolInput)],
+      ["fallbackStarted", yesNo(fallbackStarted)],
+      ["lastEvents", lastEvents.length ? lastEvents.join(" | ") : "none"],
+    ];
+
+    return '<div class="diagnostics" data-slimweb-bridge-diagnostics="true">' +
+      '<p class="diagnostics-title">Bridge diagnostics</p>' +
+      (note ? '<div class="diagnostics-row"><span>note</span><span>' + note + '</span></div>' : '') +
+      rows.map(([label, value]) =>
+        '<div class="diagnostics-row"><span>' + label + '</span><span>' + value + '</span></div>'
+      ).join("") +
+      '</div>';
+  }
+
   function renderWaiting() {
-    root.innerHTML = '<div class="empty">Waiting for product data...</div>';
+    root.innerHTML = '<div class="empty">Waiting for product data...</div>' + diagnosticsHtml();
     window.openai?.notifyIntrinsicHeight?.();
   }
 
@@ -172,14 +233,16 @@ const PRODUCT_LIST_WIDGET_HTML = `
     if (rendered || fallbackStarted || !latestToolInput || !window.openai?.callTool) return;
 
     fallbackStarted = true;
-    root.innerHTML = '<div class="empty">Loading product cards...</div>';
+    root.innerHTML = '<div class="empty">Loading product cards...</div>' + diagnosticsHtml("widget fallback callTool started");
     window.openai.notifyIntrinsicHeight?.();
 
     try {
       const result = await window.openai.callTool("client_catalog_search", latestToolInput);
+      rememberEvent("callTool:result", result);
       render(result);
     } catch {
-      root.innerHTML = '<div class="empty">Product data was returned, but the widget bridge did not deliver it.</div>';
+      root.innerHTML = '<div class="empty">Product data was returned, but the widget bridge did not deliver it.</div>' +
+        diagnosticsHtml("callTool failed or was blocked");
       window.openai.notifyIntrinsicHeight?.();
     }
   }
@@ -251,6 +314,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
   }
 
   rememberToolInput(readOpenAiInput());
+  rememberEvent("initial", window.openai);
   render(readOpenAiPayload());
 
   let pollCount = 0;
@@ -267,6 +331,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
   }, 100);
 
   window.addEventListener("openai:set_globals", (event) => {
+    rememberEvent("openai:set_globals", event.detail);
     rememberToolInput(event.detail);
     render(event.detail);
     window.setTimeout(loadProductsFromWidget, 250);
@@ -275,6 +340,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
   window.addEventListener("message", (event) => {
     const message = event.data;
     if (!message || message.jsonrpc !== "2.0") return;
+    rememberEvent(message.method || "message", message.params);
     if (message.method === "ui/notifications/tool-input") {
       rememberToolInput(message.params);
       window.setTimeout(loadProductsFromWidget, 250);
