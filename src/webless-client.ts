@@ -16,17 +16,20 @@ export type WeblessJson = unknown;
 export interface WeblessClientOptions {
   baseUrl: string;
   siteKey?: string;
+  memberId?: number;
   fetchImpl?: (input: Request) => Promise<Response>;
 }
 
 export class WeblessClient {
   private readonly baseUrl: string;
   private readonly siteKey?: string;
+  private readonly memberId?: number;
   private readonly fetchImpl: (input: Request) => Promise<Response>;
 
   constructor(options: WeblessClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.siteKey = options.siteKey;
+    this.memberId = options.memberId;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -57,6 +60,10 @@ export class WeblessClient {
       `/api/storefront/orders/${encodeURIComponent(input.orderToken)}`,
     );
     this.appendSite(url);
+
+    if (this.memberId !== undefined) {
+      url.searchParams.set("member_id", String(this.memberId));
+    }
 
     return this.getJson(url);
   }

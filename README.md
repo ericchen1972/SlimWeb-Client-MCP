@@ -18,17 +18,47 @@ Merchant-only operations and provider callback truth remain in Webless. This
 service does not complete refunds, request provider refunds, process logistics
 callbacks, or mutate admin order state.
 
+## Public URL
+
+Each site uses its existing Webless `sites.callback_code` as the public MCP
+handle:
+
+```text
+https://<slimweb-client-mcp-host>/sites/{callback_code}/mcp
+```
+
+Example:
+
+```text
+https://slimweb-client-mcp.example.run.app/sites/swcb_zog0l7zlyp3lwmlc/mcp
+```
+
+The request host does not determine the site. Custom storefront domains do not
+change routing; the site is resolved only from `{callback_code}`.
+
+Google login is posted to:
+
+```text
+https://<slimweb-client-mcp-host>/sites/{callback_code}/auth/google
+```
+
+After Google verification, the service finds or creates a Webless `members`
+record for that site.
+
 ## Configuration
 
 Set these environment variables before launching the MCP server:
 
 ```bash
 export WEBLESS_BASE_URL="https://your-webless-host.example"
-export WEBLESS_SITE_KEY="site-1"
+export MCP_SESSION_SECRET="change-me"
+export PUBLIC_BASE_URL="https://slimweb-client-mcp.example.run.app"
+export GOOGLE_CLIENT_ID="your-google-client-id.apps.googleusercontent.com"
 ```
 
-`WEBLESS_SITE_KEY` is optional. When present, the client appends it as `site` to
-storefront requests.
+Database connection uses either `DATABASE_URL` or the `DB_HOST`, `DB_PORT`,
+`DB_DATABASE`, `DB_USERNAME`, and `DB_PASSWORD` variables. These point at the
+same Webless database that owns `sites` and `members`.
 
 ## Local Commands
 
@@ -39,9 +69,9 @@ npm run typecheck
 npm run build
 ```
 
-Run over stdio:
+Run HTTP locally:
 
 ```bash
 npm run build
-WEBLESS_BASE_URL="https://your-webless-host.example" node dist/src/index.js
+WEBLESS_BASE_URL="https://your-webless-host.example" MCP_SESSION_SECRET="dev-secret" node dist/src/index.js
 ```
