@@ -95,9 +95,16 @@ test("site MCP tools/list is routed by callback code", async () => {
     assert.equal(searchTool._meta["openai/widgetAccessible"], true);
     assert.equal(searchTool.outputSchema.properties.items.maxItems, 5);
 
+    const overviewTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_catalog_overview");
+    assert.equal(overviewTool.outputSchema.properties.categories.type, "array");
+
     const detailTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_product_detail");
     assert.equal(detailTool._meta.ui.resourceUri, "ui://widget/product-list.html");
     assert.equal(detailTool._meta["openai/outputTemplate"], "ui://widget/product-list.html");
+    assert.equal(detailTool.outputSchema.properties.product.type, "object");
+
+    const orderTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_order_lookup");
+    assert.equal(orderTool.outputSchema.properties.order.type, "object");
   });
 });
 

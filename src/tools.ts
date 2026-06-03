@@ -59,6 +59,38 @@ const orderLookupSchema = {
   orderToken: z.string().trim().min(1),
 } satisfies ZodRawShape;
 
+const productProperties = {
+  id: { type: "number" },
+  sku: { type: ["string", "null"] },
+  name: { type: "string" },
+  slug: { type: ["string", "null"] },
+  summary: { type: ["string", "null"] },
+  category: { type: "object" },
+  image_url: { type: ["string", "null"] },
+  product_url: { type: "string" },
+  price: { type: "object" },
+  regular_price: { type: "object" },
+} satisfies Record<string, unknown>;
+
+const catalogOverviewOutputSchema = {
+  type: "object",
+  properties: {
+    site: { type: "object" },
+    categories: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          id: { type: "number" },
+          name: { type: "string" },
+          path: { type: "array", items: { type: "string" } },
+          product_count: { type: "number" },
+        },
+      },
+    },
+  },
+} satisfies Record<string, unknown>;
+
 const catalogSearchOutputSchema = {
   type: "object",
   properties: {
@@ -70,16 +102,28 @@ const catalogSearchOutputSchema = {
       maxItems: 5,
       items: {
         type: "object",
-        properties: {
-          id: { type: "number" },
-          name: { type: "string" },
-          image_url: { type: ["string", "null"] },
-          product_url: { type: "string" },
-          price: { type: "object" },
-          regular_price: { type: "object" },
-        },
+        properties: productProperties,
       },
     },
+  },
+} satisfies Record<string, unknown>;
+
+const productDetailOutputSchema = {
+  type: "object",
+  properties: {
+    site: { type: "object" },
+    product: {
+      type: "object",
+      properties: productProperties,
+    },
+  },
+} satisfies Record<string, unknown>;
+
+const orderLookupOutputSchema = {
+  type: "object",
+  properties: {
+    site: { type: "object" },
+    order: { type: "object" },
   },
 } satisfies Record<string, unknown>;
 
@@ -91,6 +135,7 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
       description:
         "Retrieve customer-visible storefront category paths and product counts. Use this before product search when the shopper's request is broad or ambiguous, then ask the shopper to choose if multiple categories could match.",
       inputSchema: catalogOverviewSchema,
+      outputSchema: catalogOverviewOutputSchema,
       handler: () => client.getCatalogOverview(),
     },
     {
@@ -121,6 +166,7 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
       title: "Get storefront product detail",
       description: "Retrieve customer-visible detail for one storefront product.",
       inputSchema: productDetailSchema,
+      outputSchema: productDetailOutputSchema,
       _meta: {
         ui: {
           resourceUri: PRODUCT_LIST_WIDGET_URI,
@@ -137,6 +183,7 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
       title: "Look up customer order",
       description: "Retrieve a customer-visible order summary by order token.",
       inputSchema: orderLookupSchema,
+      outputSchema: orderLookupOutputSchema,
       handler: (args: unknown) =>
         client.getOrderSummary(z.object(orderLookupSchema).parse(args)),
     },
