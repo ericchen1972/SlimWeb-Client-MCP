@@ -61,6 +61,11 @@ export function createRequestHandler(options: RequestHandlerOptions) {
         return;
       }
 
+      if (url.pathname === "/image-proxy") {
+        await handleImageProxy(request, response, url, options.fetchImpl ?? fetch);
+        return;
+      }
+
       if (isOAuthMetadataPath(url.pathname)) {
         handleOAuthMetadata(request, response, options);
         return;
@@ -128,6 +133,135 @@ export function createRequestHandler(options: RequestHandlerOptions) {
       });
     }
   };
+}
+
+async function handleImageProxy(
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  fetchImpl: typeof fetch,
+): Promise<void> {
+  if (request.method !== "GET") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const targetValue = url.searchParams.get("url") ?? "";
+  const targetUrl = parsePublicImageUrl(targetValue);
+
+  if (!targetUrl) {
+    jsonResponse(response, 400, {
+      ok: false,
+      error: "Invalid image proxy URL.",
+    });
+    return;
+  }
+
+  const upstream = await fetchPublicImage(targetUrl, fetchImpl);
+  const contentType = upstream.headers.get("content-type") ?? "";
+
+  if (!upstream.ok || !contentType.toLowerCase().startsWith("image/")) {
+    jsonResponse(response, 502, {
+      ok: false,
+      error: "Image proxy target did not return an image.",
+    });
+    return;
+  }
+
+  const bytes = Buffer.from(await upstream.arrayBuffer());
+
+  response.writeHead(200, {
+    "content-type": contentType,
+    "cache-control": "public, max-age=86400",
+    "content-length": String(bytes.byteLength),
+    "x-content-type-options": "nosniff",
+  });
+  response.end(bytes);
+}
+
+async function fetchPublicImage(
+  targetUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<Response> {
+  let currentUrl = targetUrl;
+
+  for (let redirectCount = 0; redirectCount < 4; redirectCount += 1) {
+    const upstream = await fetchImpl(new Request(currentUrl, { redirect: "manual" }));
+
+    if (![301, 302, 303, 307, 308].includes(upstream.status)) {
+      return upstream;
+    }
+
+    const location = upstream.headers.get("location");
+
+    if (!location) {
+      return upstream;
+    }
+
+    const nextUrl = parsePublicImageUrl(new URL(location, currentUrl).toString());
+
+    if (!nextUrl) {
+      return new Response("Blocked image redirect.", { status: 400 });
+    }
+
+    currentUrl = nextUrl;
+  }
+
+  return new Response("Too many image redirects.", { status: 400 });
+}
+
+function parsePublicImageUrl(value: string): string | null {
+  try {
+    const url = new URL(value);
+
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return null;
+    }
+
+    if (isBlockedImageProxyHostname(url.hostname)) {
+      return null;
+    }
+
+    url.username = "";
+    url.password = "";
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+function isBlockedImageProxyHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host.endsWith(".local") ||
+    host === "::1" ||
+    host.startsWith("fc") ||
+    host.startsWith("fd") ||
+    host.startsWith("fe80:")
+  ) {
+    return true;
+  }
+
+  const ipv4 = host.match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+
+  if (!ipv4) {
+    return false;
+  }
+
+  const first = Number(ipv4[1]);
+  const second = Number(ipv4[2]);
+
+  return (
+    first === 0 ||
+    first === 10 ||
+    first === 127 ||
+    (first === 169 && second === 254) ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168)
+  );
 }
 
 function isOAuthMetadataPath(pathname: string): boolean {

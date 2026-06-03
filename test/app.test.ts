@@ -150,6 +150,7 @@ test("site MCP product list widget resource can be listed and read", async () =>
     assert.match(readBody.result.contents[0].text, /toolOutput/);
     assert.match(readBody.result.contents[0].text, /toolOutputKeys/);
     assert.match(readBody.result.contents[0].text, /enqueueObjectValues/);
+    assert.match(readBody.result.contents[0].text, /proxyImageUrl/);
     assert.match(readBody.result.contents[0].text, /lastEvents/);
     assert.match(readBody.result.contents[0].text, /Waiting for product data/);
     assert.equal(
@@ -163,6 +164,7 @@ test("site MCP product list widget resource can be listed and read", async () =>
     assert.deepEqual(
       readBody.result.contents[0]._meta.ui.csp.resourceDomains,
       [
+        "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app",
         "https://slimweb.tw",
         "https://i1.momoshop.com.tw",
         "https://i2.momoshop.com.tw",
@@ -174,6 +176,60 @@ test("site MCP product list widget resource can be listed and read", async () =>
       ],
     );
   });
+});
+
+test("image proxy streams public image responses for widget CSP", async () => {
+  const upstreamRequests: Request[] = [];
+
+  await withApp(
+    fakeRepository(),
+    async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/image-proxy?url=${encodeURIComponent("https://cdn.example.test/watch.png")}`);
+      const body = await response.text();
+
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "image/png");
+      assert.equal(response.headers.get("cache-control"), "public, max-age=86400");
+      assert.equal(body, "image-bytes");
+      assert.equal(upstreamRequests.length, 1);
+      assert.equal(upstreamRequests[0].url, "https://cdn.example.test/watch.png");
+    },
+    async (input) => {
+      upstreamRequests.push(input as Request);
+      return new Response("image-bytes", {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      });
+    },
+  );
+});
+
+test("image proxy rejects private loopback targets", async () => {
+  await withApp(fakeRepository(), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/image-proxy?url=${encodeURIComponent("http://127.0.0.1/private.png")}`);
+    const body = await response.json();
+
+    assert.equal(response.status, 400);
+    assert.equal(body.ok, false);
+  });
+});
+
+test("image proxy rejects redirects to private targets", async () => {
+  await withApp(
+    fakeRepository(),
+    async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/image-proxy?url=${encodeURIComponent("https://cdn.example.test/redirect.png")}`);
+      const body = await response.json();
+
+      assert.equal(response.status, 502);
+      assert.equal(body.ok, false);
+    },
+    async () =>
+      new Response(null, {
+        status: 302,
+        headers: { location: "http://127.0.0.1/private.png" },
+      }),
+  );
 });
 
 test("site MCP storefront catalog overview can be called without a session", async () => {

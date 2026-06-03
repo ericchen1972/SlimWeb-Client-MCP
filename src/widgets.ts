@@ -112,6 +112,20 @@ const PRODUCT_LIST_WIDGET_HTML = `
     return text(item?.price?.formatted) || text(item?.regular_price?.formatted);
   }
 
+  function proxyImageUrl(imageUrl) {
+    try {
+      const url = new URL(imageUrl);
+
+      if (!["http:", "https:"].includes(url.protocol)) {
+        return imageUrl;
+      }
+
+      return "${PRODUCT_LIST_WIDGET_DOMAIN}/image-proxy?url=" + encodeURIComponent(url.toString());
+    } catch {
+      return imageUrl;
+    }
+  }
+
   function objectValue(value) {
     return value && typeof value === "object" ? value : null;
   }
@@ -286,7 +300,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
       const imageUrl = text(item?.image_url);
       if (imageUrl) {
         const img = document.createElement("img");
-        img.src = imageUrl;
+        img.src = proxyImageUrl(imageUrl);
         img.alt = text(item?.name, "Product image");
         img.loading = "lazy";
         card.append(img);
@@ -385,6 +399,7 @@ export function productListWidgetContents() {
       "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app",
     ],
     resourceDomains: [
+      PRODUCT_LIST_WIDGET_DOMAIN,
       "https://slimweb.tw",
       "https://i1.momoshop.com.tw",
       "https://i2.momoshop.com.tw",
