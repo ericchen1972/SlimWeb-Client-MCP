@@ -141,6 +141,8 @@ test("site MCP product list widget resource can be listed and read", async () =>
     assert.match(readBody.result.contents[0].text, /callTool\("client_catalog_search"/);
     assert.match(readBody.result.contents[0].text, /Bridge diagnostics/);
     assert.match(readBody.result.contents[0].text, /toolOutput/);
+    assert.match(readBody.result.contents[0].text, /toolOutputKeys/);
+    assert.match(readBody.result.contents[0].text, /enqueueObjectValues/);
     assert.match(readBody.result.contents[0].text, /lastEvents/);
     assert.match(readBody.result.contents[0].text, /Waiting for product data/);
     assert.equal(

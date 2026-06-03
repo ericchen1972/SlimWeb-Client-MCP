@@ -116,6 +116,14 @@ const PRODUCT_LIST_WIDGET_HTML = `
     return value && typeof value === "object" ? value : null;
   }
 
+  function enqueueObjectValues(queue, candidate) {
+    for (const value of Object.values(candidate)) {
+      if (objectValue(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
   function productPayload(value) {
     const seen = new Set();
     const queue = [value];
@@ -144,6 +152,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
         candidate.params,
         candidate.globals,
       );
+      enqueueObjectValues(queue, candidate);
     }
 
     return null;
@@ -169,6 +178,7 @@ const PRODUCT_LIST_WIDGET_HTML = `
         candidate.params,
         candidate.globals,
       );
+      enqueueObjectValues(queue, candidate);
     }
 
     return null;
@@ -198,15 +208,22 @@ const PRODUCT_LIST_WIDGET_HTML = `
     return value ? "yes" : "no";
   }
 
+  function keysOf(value) {
+    return objectValue(value) ? Object.keys(value).slice(0, 10).join(",") || "object-no-keys" : typeof value;
+  }
+
   function diagnosticsHtml(note = "") {
     const openai = objectValue(window.openai);
     const rows = [
       ["window.openai", yesNo(openai)],
       ["toolInput", yesNo(window.openai?.toolInput)],
       ["toolOutput", yesNo(window.openai?.toolOutput)],
+      ["toolOutputKeys", keysOf(window.openai?.toolOutput)],
       ["toolResponseMetadata", yesNo(window.openai?.toolResponseMetadata)],
+      ["toolResponseMetadataKeys", keysOf(window.openai?.toolResponseMetadata)],
       ["callTool", typeof window.openai?.callTool === "function" ? "yes" : "no"],
       ["latestToolInput", yesNo(latestToolInput)],
+      ["latestToolInputKeys", keysOf(latestToolInput)],
       ["fallbackStarted", yesNo(fallbackStarted)],
       ["lastEvents", lastEvents.length ? lastEvents.join(" | ") : "none"],
     ];
