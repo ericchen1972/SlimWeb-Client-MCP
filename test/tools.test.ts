@@ -57,16 +57,44 @@ test("client_catalog_search dispatches to Webless catalog search", async () => {
   const result = await registry.callTool("client_catalog_search", {
     query: "tea",
     limit: 3,
+    minPrice: 1000,
+    maxPrice: 5000,
+    freshness: "latest",
   });
 
   assert.deepEqual(result, {
     content: [
       {
         type: "text",
-        text: JSON.stringify({ received: { query: "tea", limit: 3 } }, null, 2),
+        text: JSON.stringify({
+          received: {
+            query: "tea",
+            limit: 3,
+            minPrice: 1000,
+            maxPrice: 5000,
+            freshness: "latest",
+          },
+        }, null, 2),
       },
     ],
   });
+});
+
+test("client_catalog_search rejects more than ten requested products", async () => {
+  const registry = createToolRegistry({
+    getCatalogOverview: async () => ({ categories: [] }),
+    searchCatalog: async (input) => ({ received: input }),
+    getProductDetail: async () => ({ product: null }),
+    getOrderSummary: async () => ({ order: null }),
+  });
+
+  await assert.rejects(
+    () => registry.callTool("client_catalog_search", {
+      query: "tea",
+      limit: 11,
+    }),
+    /Number must be less than or equal to 10/,
+  );
 });
 
 test("unknown tools are rejected", async () => {

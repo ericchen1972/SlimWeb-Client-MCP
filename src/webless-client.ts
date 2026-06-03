@@ -1,6 +1,11 @@
 export interface CatalogSearchInput {
   query: string;
   limit?: number;
+  minPrice?: number;
+  maxPrice?: number;
+  freshness?: "latest";
+  popularity?: "popular";
+  priceOrder?: "asc" | "desc";
 }
 
 export interface ProductDetailInput {
@@ -46,6 +51,26 @@ export class WeblessClient {
 
     if (input.limit !== undefined) {
       url.searchParams.set("limit", String(input.limit));
+    }
+
+    if (input.minPrice !== undefined) {
+      url.searchParams.set("min_price", String(input.minPrice));
+    }
+
+    if (input.maxPrice !== undefined) {
+      url.searchParams.set("max_price", String(input.maxPrice));
+    }
+
+    if (input.freshness !== undefined) {
+      url.searchParams.set("freshness", input.freshness);
+    }
+
+    if (input.popularity !== undefined) {
+      url.searchParams.set("popularity", input.popularity);
+    }
+
+    if (input.priceOrder !== undefined) {
+      url.searchParams.set("price_order", input.priceOrder);
     }
 
     this.appendSite(url);

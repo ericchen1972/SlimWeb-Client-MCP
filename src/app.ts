@@ -519,12 +519,50 @@ function toolForMcp(tool: ReturnType<ReturnType<typeof createToolRegistry>["list
     name: tool.name,
     title: tool.title,
     description: tool.description,
-    inputSchema: {
+    inputSchema: inputSchemaForTool(tool.name),
+  };
+}
+
+function inputSchemaForTool(toolName: string) {
+  if (toolName === "client_catalog_search") {
+    return {
       type: "object",
-      properties: Object.fromEntries(
-        Object.keys(tool.inputSchema).map((key) => [key, {}]),
-      ),
-    },
+      properties: {
+        query: { type: "string" },
+        limit: { type: "number", minimum: 1, maximum: 10 },
+        minPrice: { type: "number", minimum: 0 },
+        maxPrice: { type: "number", minimum: 0 },
+        freshness: { type: "string", enum: ["latest"] },
+        popularity: { type: "string", enum: ["popular"] },
+        priceOrder: { type: "string", enum: ["asc", "desc"] },
+      },
+      required: ["query"],
+    };
+  }
+
+  if (toolName === "client_product_detail") {
+    return {
+      type: "object",
+      properties: {
+        productId: { type: "string" },
+      },
+      required: ["productId"],
+    };
+  }
+
+  if (toolName === "client_order_lookup") {
+    return {
+      type: "object",
+      properties: {
+        orderToken: { type: "string" },
+      },
+      required: ["orderToken"],
+    };
+  }
+
+  return {
+    type: "object",
+    properties: {},
   };
 }
 

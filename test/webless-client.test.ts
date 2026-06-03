@@ -45,6 +45,32 @@ test("searchCatalog sends query and site key to the storefront search endpoint",
   assert.deepEqual(result, { items: [{ id: "p1", name: "Tea" }] });
 });
 
+test("searchCatalog sends optional price and recommendation fields", async () => {
+  const requests: Request[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    fetchImpl: async (input) => {
+      requests.push(input as Request);
+      return Response.json({ items: [] });
+    },
+  });
+
+  await client.searchCatalog({
+    query: "watch",
+    limit: 3,
+    minPrice: 40000,
+    maxPrice: 50000,
+    popularity: "popular",
+    priceOrder: "asc",
+  });
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/catalog/search?q=watch&limit=3&min_price=40000&max_price=50000&popularity=popular&price_order=asc&site=site-1",
+  );
+});
+
 test("getOrderSummary sends order token as a path segment", async () => {
   const requests: Request[] = [];
   const client = new WeblessClient({

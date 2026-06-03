@@ -14,7 +14,10 @@ This repo is separate from:
   and product counts. AI clients should use this first when a shopper's request
   is broad or ambiguous.
 - `client_catalog_search`: search customer-visible storefront products by
-  product text or category after the shopper intent is clear.
+  product text or category after the shopper intent is clear. Optional filters
+  include quantity `limit` (default 3, max 10), `minPrice`, `maxPrice`,
+  `freshness=latest`, `popularity=popular`, and `priceOrder=asc|desc`. AI
+  clients should show `image_url` as product images and include `product_url`.
 - `client_product_detail`: fetch a customer-visible product detail.
 - `client_order_lookup`: fetch a customer-visible order summary by token.
 

@@ -85,6 +85,10 @@ test("site MCP tools/list is routed by callback code", async () => {
         "client_order_lookup",
       ],
     );
+    const searchTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_catalog_search");
+    assert.equal(searchTool.inputSchema.properties.limit.maximum, 10);
+    assert.equal(searchTool.inputSchema.properties.minPrice.type, "number");
+    assert.equal(searchTool.inputSchema.properties.freshness.enum[0], "latest");
   });
 });
 
