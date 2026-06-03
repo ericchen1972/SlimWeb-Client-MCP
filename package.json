@@ -1,0 +1,26 @@
+{
+  "name": "slimweb-client-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Consumer-side MCP server for Webless storefront operations.",
+  "bin": {
+    "slimweb-client-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.13.0",
+    "zod": "^3.25.56"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.57",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
