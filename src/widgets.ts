@@ -62,6 +62,60 @@ const PRODUCT_LIST_WIDGET_HTML = `
     text-decoration: underline;
     text-underline-offset: 3px;
   }
+  .preview {
+    grid-column: 1 / -1;
+    border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+    border-radius: 8px;
+    overflow: hidden;
+    background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+  }
+  .preview-section {
+    padding: 12px;
+    border-top: 1px solid color-mix(in srgb, CanvasText 12%, transparent);
+  }
+  .preview-section:first-child {
+    border-top: 0;
+  }
+  .preview-title {
+    margin: 0 0 8px;
+    font-size: 13px;
+    font-weight: 800;
+  }
+  .preview-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .preview-table th,
+  .preview-table td {
+    padding: 7px 6px;
+    border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent);
+    text-align: left;
+    vertical-align: top;
+  }
+  .preview-table th {
+    color: color-mix(in srgb, CanvasText 72%, transparent);
+    font-weight: 700;
+  }
+  .preview-table td:last-child,
+  .preview-table th:last-child {
+    text-align: right;
+  }
+  .preview-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px 14px;
+    font-size: 12px;
+  }
+  .preview-field span {
+    display: block;
+    margin-bottom: 3px;
+    color: color-mix(in srgb, CanvasText 62%, transparent);
+  }
+  .preview-field strong {
+    display: block;
+    overflow-wrap: anywhere;
+  }
   .empty {
     grid-column: 1 / -1;
     padding: 16px;
@@ -153,6 +207,36 @@ const PRODUCT_LIST_WIDGET_HTML = `
 
       if (objectValue(candidate.product)) {
         return { ...candidate, items: [candidate.product] };
+      }
+
+      queue.push(
+        candidate.structuredContent,
+        candidate.toolOutput,
+        candidate.toolResponse,
+        candidate.toolResponseMetadata,
+        candidate.call_tool_result,
+        candidate.mcp_tool_result,
+        candidate.result,
+        candidate.params,
+        candidate.globals,
+      );
+      enqueueObjectValues(queue, candidate);
+    }
+
+    return null;
+  }
+
+  function orderPreviewPayload(value) {
+    const seen = new Set();
+    const queue = [value];
+
+    while (queue.length > 0) {
+      const candidate = objectValue(queue.shift());
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+
+      if (objectValue(candidate.preview) && Array.isArray(candidate.preview.items)) {
+        return candidate.preview;
       }
 
       queue.push(
@@ -279,6 +363,12 @@ const PRODUCT_LIST_WIDGET_HTML = `
   }
 
   function render(payload) {
+    const previewPayload = orderPreviewPayload(payload);
+    if (previewPayload) {
+      renderOrderPreview(previewPayload);
+      return;
+    }
+
     const normalizedPayload = productPayload(payload);
     if (!normalizedPayload) {
       renderWaiting();
@@ -341,6 +431,86 @@ const PRODUCT_LIST_WIDGET_HTML = `
       return card;
     }));
 
+    window.openai?.notifyIntrinsicHeight?.();
+  }
+
+  function renderOrderPreview(preview) {
+    rendered = true;
+    const items = Array.isArray(preview.items) ? preview.items : [];
+    const totals = objectValue(preview.totals) || {};
+    const buyer = objectValue(preview.buyer) || {};
+    const recipient = objectValue(preview.recipient) || {};
+
+    const shell = document.createElement("article");
+    shell.className = "preview";
+
+    const products = document.createElement("section");
+    products.className = "preview-section";
+    const productsTitle = document.createElement("h3");
+    productsTitle.className = "preview-title";
+    productsTitle.textContent = "Order confirmation";
+    products.append(productsTitle);
+
+    const table = document.createElement("table");
+    table.className = "preview-table";
+    const thead = document.createElement("thead");
+    thead.innerHTML = "<tr><th>ID</th><th>Product</th><th>Qty</th><th>Subtotal</th></tr>";
+    table.append(thead);
+    const tbody = document.createElement("tbody");
+    for (const item of items) {
+      const tr = document.createElement("tr");
+      const id = document.createElement("td");
+      id.textContent = String(item?.product_id ?? "");
+      const name = document.createElement("td");
+      name.textContent = text(item?.name, "Product");
+      const quantity = document.createElement("td");
+      quantity.textContent = String(item?.quantity ?? "");
+      const total = document.createElement("td");
+      total.textContent = text(item?.line_total?.formatted);
+      tr.append(id, name, quantity, total);
+      tbody.append(tr);
+    }
+    table.append(tbody);
+    products.append(table);
+    shell.append(products);
+
+    const totalsSection = document.createElement("section");
+    totalsSection.className = "preview-section";
+    const totalsTable = document.createElement("table");
+    totalsTable.className = "preview-table";
+    totalsTable.innerHTML =
+      "<tbody>" +
+      "<tr><th>Product subtotal</th><td>" + text(totals.subtotal?.formatted) + "</td></tr>" +
+      "<tr><th>Shipping fee</th><td>" + text(totals.shipping_fee?.formatted) + "</td></tr>" +
+      "<tr><th>Total</th><td>" + text(totals.total?.formatted) + "</td></tr>" +
+      "</tbody>";
+    totalsSection.append(totalsTable);
+    shell.append(totalsSection);
+
+    const people = document.createElement("section");
+    people.className = "preview-section";
+    people.innerHTML =
+      '<h3 class="preview-title">Buyer / recipient</h3>' +
+      '<div class="preview-grid">' +
+      '<div class="preview-field"><span>Buyer</span><strong></strong></div>' +
+      '<div class="preview-field"><span>Buyer phone</span><strong></strong></div>' +
+      '<div class="preview-field"><span>Recipient</span><strong></strong></div>' +
+      '<div class="preview-field"><span>Recipient phone</span><strong></strong></div>' +
+      '<div class="preview-field"><span>Address</span><strong></strong></div>' +
+      '</div>';
+    const values = [
+      text(buyer.name),
+      text(buyer.phone),
+      text(recipient.name),
+      text(recipient.phone),
+      text(recipient.address),
+    ];
+    people.querySelectorAll("strong").forEach((node, index) => {
+      node.textContent = values[index] || "-";
+    });
+    shell.append(people);
+
+    root.replaceChildren(shell);
     window.openai?.notifyIntrinsicHeight?.();
   }
 

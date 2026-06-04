@@ -3,8 +3,9 @@ import { z, type ZodRawShape } from "zod";
 import type {
   CatalogSearchInput,
   OrderListInput,
-  OrderSummaryInput,
+  OrderPreviewInput,
   ProductDetailInput,
+  ProductVerifyInput,
   WeblessJson,
 } from "./webless-client.js";
 import { PRODUCT_LIST_WIDGET_URI } from "./widgets.js";
@@ -13,8 +14,10 @@ export interface ConsumerWeblessClient {
   getCatalogOverview(): Promise<WeblessJson>;
   searchCatalog(input: CatalogSearchInput): Promise<WeblessJson>;
   getProductDetail(input: ProductDetailInput): Promise<WeblessJson>;
+  verifyProduct(input: ProductVerifyInput): Promise<WeblessJson>;
   getOrderList(input: OrderListInput): Promise<WeblessJson>;
-  getOrderSummary(input: OrderSummaryInput): Promise<WeblessJson>;
+  getCustomerContext(): Promise<WeblessJson>;
+  getOrderPreview(input: OrderPreviewInput): Promise<WeblessJson>;
 }
 
 export interface ToolDefinition {
@@ -57,13 +60,28 @@ const productDetailSchema = {
   productId: z.string().trim().min(1),
 } satisfies ZodRawShape;
 
-const orderLookupSchema = {
-  orderToken: z.string().trim().min(1),
+const productVerifySchema = {
+  productId: z.string().trim().min(1),
+  quantity: z.number().int().min(1).max(99).optional(),
 } satisfies ZodRawShape;
 
 const orderListSchema = {
   status: z.enum(["all", "pending", "completed"]).default("all").optional(),
   limit: z.number().int().min(1).max(20).optional(),
+} satisfies ZodRawShape;
+
+const customerContextSchema = {} satisfies ZodRawShape;
+
+const orderPreviewSchema = {
+  items: z.array(z.object({
+    productId: z.number().int().min(1),
+    quantity: z.number().int().min(1).max(99),
+  })).min(1).max(10),
+  buyerName: z.string().trim().min(1),
+  buyerPhone: z.string().trim().min(1),
+  recipientName: z.string().trim().min(1),
+  recipientPhone: z.string().trim().min(1),
+  recipientAddress: z.string().trim().min(1),
 } satisfies ZodRawShape;
 
 const productProperties = {
@@ -126,11 +144,14 @@ const productDetailOutputSchema = {
   },
 } satisfies Record<string, unknown>;
 
-const orderLookupOutputSchema = {
+const productVerifyOutputSchema = {
   type: "object",
   properties: {
     site: { type: "object" },
-    order: { type: "object" },
+    requested: { type: "object" },
+    available: { type: "boolean" },
+    reason: { type: ["string", "null"] },
+    product: { type: "object" },
   },
 } satisfies Record<string, unknown>;
 
@@ -143,6 +164,23 @@ const orderListOutputSchema = {
       type: "array",
       items: { type: "object" },
     },
+  },
+} satisfies Record<string, unknown>;
+
+const customerContextOutputSchema = {
+  type: "object",
+  properties: {
+    site: { type: "object" },
+    customer: { type: "object" },
+    last_order: { type: ["object", "null"] },
+  },
+} satisfies Record<string, unknown>;
+
+const orderPreviewOutputSchema = {
+  type: "object",
+  properties: {
+    site: { type: "object" },
+    preview: { type: "object" },
   },
 } satisfies Record<string, unknown>;
 
@@ -198,6 +236,16 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
         client.getProductDetail(z.object(productDetailSchema).parse(args)),
     },
     {
+      name: "client_product_verify",
+      title: "Verify storefront product for checkout",
+      description:
+        "Verify one storefront product by product id before purchase. Use this when the shopper expresses purchase intent and the model already has a product id from current conversation or prior tool results. Returns current availability, stock, price, and line total for the requested quantity.",
+      inputSchema: productVerifySchema,
+      outputSchema: productVerifyOutputSchema,
+      handler: (args: unknown) =>
+        client.verifyProduct(z.object(productVerifySchema).parse(args)),
+    },
+    {
       name: "client_order_list",
       title: "List customer orders",
       description:
@@ -208,14 +256,33 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
         client.getOrderList(z.object(orderListSchema).parse(args)),
     },
     {
-      name: "client_order_lookup",
-      title: "Look up customer order",
+      name: "client_customer_context",
+      title: "Get customer checkout context",
       description:
-        "Retrieve one customer-visible order summary by order number/token. Prefer client_order_list when the shopper asks which orders they have or asks about order progress without giving an order number.",
-      inputSchema: orderLookupSchema,
-      outputSchema: orderLookupOutputSchema,
+        "Retrieve the signed-in customer's profile and last order so the model can decide which buyer, recipient, phone, and address fields are still missing before preparing a checkout confirmation table.",
+      inputSchema: customerContextSchema,
+      outputSchema: customerContextOutputSchema,
+      handler: () => client.getCustomerContext(),
+    },
+    {
+      name: "client_order_preview",
+      title: "Prepare checkout confirmation table",
+      description:
+        "Prepare a checkout confirmation table after product availability and required customer fields are known. This does not create an order or payment link. The table includes product id, product name, quantity, item totals, shipping fee, final total, buyer name/phone, recipient name/phone, and address. Do not include payment method or pickup/shipping method.",
+      inputSchema: orderPreviewSchema,
+      outputSchema: orderPreviewOutputSchema,
+      _meta: {
+        ui: {
+          resourceUri: PRODUCT_LIST_WIDGET_URI,
+          visibility: ["model", "app"],
+        },
+        "openai/outputTemplate": PRODUCT_LIST_WIDGET_URI,
+        "openai/widgetAccessible": true,
+        "openai/toolInvocation/invoking": "Preparing confirmation...",
+        "openai/toolInvocation/invoked": "Confirmation ready",
+      },
       handler: (args: unknown) =>
-        client.getOrderSummary(z.object(orderLookupSchema).parse(args)),
+        client.getOrderPreview(z.object(orderPreviewSchema).parse(args)),
     },
   ];
 
@@ -255,6 +322,10 @@ export function createToolRegistry(client: ConsumerWeblessClient): ToolRegistry 
 }
 
 function toolResultText(name: string, result: WeblessJson): string {
+  if (name === "client_order_preview") {
+    return "Checkout confirmation table is available in the SlimWeb widget. No order has been created.";
+  }
+
   if (name !== "client_catalog_search") {
     return JSON.stringify(result, null, 2);
   }

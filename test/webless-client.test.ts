@@ -71,23 +71,24 @@ test("searchCatalog sends optional price and recommendation fields", async () =>
   );
 });
 
-test("getOrderSummary sends order token as a path segment", async () => {
+test("verifyProduct sends product id and quantity to the verify endpoint", async () => {
   const requests: Request[] = [];
   const client = new WeblessClient({
     baseUrl: "https://example.test",
+    siteKey: "site-1",
     fetchImpl: async (input) => {
       requests.push(input as Request);
-      return Response.json({ order: { number: "A001" } });
+      return Response.json({ available: true });
     },
   });
 
-  const result = await client.getOrderSummary({ orderToken: "tok/123" });
+  const result = await client.verifyProduct({ productId: "123", quantity: 2 });
 
   assert.equal(
     requests[0].url,
-    "https://example.test/api/storefront/orders/tok%2F123",
+    "https://example.test/api/storefront/products/123/verify?site=site-1&quantity=2",
   );
-  assert.deepEqual(result, { order: { number: "A001" } });
+  assert.deepEqual(result, { available: true });
 });
 
 test("getOrderList sends member id and status filters", async () => {
@@ -109,6 +110,67 @@ test("getOrderList sends member id and status filters", async () => {
     "https://example.test/api/storefront/orders?site=site-1&member_id=42&status=pending&limit=5",
   );
   assert.deepEqual(result, { orders: [{ number: "A001" }] });
+});
+
+test("getCustomerContext sends member id to the storefront customer endpoint", async () => {
+  const requests: Request[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    memberId: 42,
+    fetchImpl: async (input) => {
+      requests.push(input as Request);
+      return Response.json({ customer: { name: "Buyer" } });
+    },
+  });
+
+  const result = await client.getCustomerContext();
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/customer/context?site=site-1&member_id=42",
+  );
+  assert.deepEqual(result, { customer: { name: "Buyer" } });
+});
+
+test("getOrderPreview posts confirmation fields to the storefront preview endpoint", async () => {
+  const requests: Request[] = [];
+  const bodies: unknown[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    memberId: 42,
+    fetchImpl: async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      bodies.push(JSON.parse(await request.text()));
+      return Response.json({ preview: { status: "ready" } });
+    },
+  });
+
+  const result = await client.getOrderPreview({
+    items: [{ productId: 123, quantity: 2 }],
+    buyerName: "Buyer",
+    buyerPhone: "0900000000",
+    recipientName: "Receiver",
+    recipientPhone: "0912345678",
+    recipientAddress: "台北市",
+  });
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/order-preview?site=site-1&member_id=42",
+  );
+  assert.equal(requests[0].method, "POST");
+  assert.deepEqual(bodies[0], {
+    items: [{ product_id: 123, quantity: 2 }],
+    buyer_name: "Buyer",
+    buyer_phone: "0900000000",
+    recipient_name: "Receiver",
+    recipient_phone: "0912345678",
+    recipient_address: "台北市",
+  });
+  assert.deepEqual(result, { preview: { status: "ready" } });
 });
 
 test("requests throw a structured error for non-2xx Webless responses", async () => {

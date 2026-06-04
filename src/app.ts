@@ -671,7 +671,11 @@ function createSiteRegistry(
 }
 
 function toolRequiresSession(toolName: string): boolean {
-  return toolName === "client_order_list" || toolName === "client_order_lookup";
+  return [
+    "client_order_list",
+    "client_customer_context",
+    "client_order_preview",
+  ].includes(toolName);
 }
 
 function toolForMcp(tool: ReturnType<ReturnType<typeof createToolRegistry>["listTools"]>[number]) {
@@ -713,13 +717,14 @@ function inputSchemaForTool(toolName: string) {
     };
   }
 
-  if (toolName === "client_order_lookup") {
+  if (toolName === "client_product_verify") {
     return {
       type: "object",
       properties: {
-        orderToken: { type: "string" },
+        productId: { type: "string" },
+        quantity: { type: "number", minimum: 1, maximum: 99 },
       },
-      required: ["orderToken"],
+      required: ["productId"],
     };
   }
 
@@ -730,6 +735,47 @@ function inputSchemaForTool(toolName: string) {
         status: { type: "string", enum: ["all", "pending", "completed"] },
         limit: { type: "number", minimum: 1, maximum: 20 },
       },
+    };
+  }
+
+  if (toolName === "client_customer_context") {
+    return {
+      type: "object",
+      properties: {},
+    };
+  }
+
+  if (toolName === "client_order_preview") {
+    return {
+      type: "object",
+      properties: {
+        items: {
+          type: "array",
+          minItems: 1,
+          maxItems: 10,
+          items: {
+            type: "object",
+            properties: {
+              productId: { type: "number", minimum: 1 },
+              quantity: { type: "number", minimum: 1, maximum: 99 },
+            },
+            required: ["productId", "quantity"],
+          },
+        },
+        buyerName: { type: "string" },
+        buyerPhone: { type: "string" },
+        recipientName: { type: "string" },
+        recipientPhone: { type: "string" },
+        recipientAddress: { type: "string" },
+      },
+      required: [
+        "items",
+        "buyerName",
+        "buyerPhone",
+        "recipientName",
+        "recipientPhone",
+        "recipientAddress",
+      ],
     };
   }
 

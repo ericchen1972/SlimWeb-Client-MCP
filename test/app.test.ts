@@ -82,8 +82,10 @@ test("site MCP tools/list is routed by callback code", async () => {
         "client_catalog_overview",
         "client_catalog_search",
         "client_product_detail",
+        "client_product_verify",
         "client_order_list",
-        "client_order_lookup",
+        "client_customer_context",
+        "client_order_preview",
       ],
     );
     const searchTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_catalog_search");
@@ -104,12 +106,21 @@ test("site MCP tools/list is routed by callback code", async () => {
     assert.equal(detailTool._meta["openai/outputTemplate"], "ui://widget/product-list.html");
     assert.equal(detailTool.outputSchema.properties.product.type, "object");
 
-    const orderTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_order_lookup");
-    assert.equal(orderTool.outputSchema.properties.order.type, "object");
+    const verifyTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_product_verify");
+    assert.equal(verifyTool.inputSchema.properties.productId.type, "string");
+    assert.equal(verifyTool.outputSchema.properties.available.type, "boolean");
 
     const orderListTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_order_list");
     assert.equal(orderListTool.inputSchema.properties.status.enum[0], "all");
     assert.equal(orderListTool.outputSchema.properties.orders.type, "array");
+
+    const contextTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_customer_context");
+    assert.equal(contextTool.outputSchema.properties.customer.type, "object");
+
+    const previewTool = body.result.tools.find((tool: { name: string }) => tool.name === "client_order_preview");
+    assert.equal(previewTool.inputSchema.required.includes("recipientAddress"), true);
+    assert.equal(previewTool._meta.ui.resourceUri, "ui://widget/product-list.html");
+    assert.equal(previewTool.outputSchema.properties.preview.type, "object");
   });
 });
 
@@ -283,7 +294,7 @@ test("site MCP storefront catalog tools can be called without a session", async 
   });
 });
 
-test("site MCP order lookup requires a session scoped to the same callback code", async () => {
+test("site MCP customer context requires a session scoped to the same callback code", async () => {
   await withApp(fakeRepository(), async (baseUrl) => {
     const response = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
       method: "POST",
@@ -293,8 +304,8 @@ test("site MCP order lookup requires a session scoped to the same callback code"
         id: 2,
         method: "tools/call",
         params: {
-          name: "client_order_lookup",
-          arguments: { orderToken: "SW202606030001" },
+          name: "client_customer_context",
+          arguments: {},
         },
       }),
     });
@@ -370,8 +381,9 @@ test("site MCP tools/call accepts a bearer session for the same callback code", 
   });
 });
 
-test("site MCP order lookup passes the authenticated member id to Webless", async () => {
+test("site MCP order preview passes the authenticated member id and payload to Webless", async () => {
   const weblessRequests: string[] = [];
+  const weblessBodies: unknown[] = [];
 
   await withApp(
     fakeRepository(),
@@ -399,8 +411,15 @@ test("site MCP order lookup passes the authenticated member id to Webless", asyn
           id: 4,
           method: "tools/call",
           params: {
-            name: "client_order_lookup",
-            arguments: { orderToken: "SW202606030001" },
+            name: "client_order_preview",
+            arguments: {
+              items: [{ productId: 123, quantity: 2 }],
+              buyerName: "Buyer",
+              buyerPhone: "0900000000",
+              recipientName: "Receiver",
+              recipientPhone: "0912345678",
+              recipientAddress: "台北市",
+            },
           },
         }),
       });
@@ -408,15 +427,25 @@ test("site MCP order lookup passes the authenticated member id to Webless", asyn
       assert.equal(response.status, 200);
     },
     async (input) => {
-      weblessRequests.push((input as Request).url);
-      return Response.json({ order: { number: "SW202606030001" } });
+      const request = input as Request;
+      weblessRequests.push(request.url);
+      weblessBodies.push(JSON.parse(await request.text()));
+      return Response.json({ preview: { status: "ready", items: [] } });
     },
   );
 
   assert.equal(
     weblessRequests[0],
-    `https://webless.example.test/api/storefront/orders/SW202606030001?site=${site.callbackCode}&member_id=${member.id}`,
+    `https://webless.example.test/api/storefront/order-preview?site=${site.callbackCode}&member_id=${member.id}`,
   );
+  assert.deepEqual(weblessBodies[0], {
+    items: [{ product_id: 123, quantity: 2 }],
+    buyer_name: "Buyer",
+    buyer_phone: "0900000000",
+    recipient_name: "Receiver",
+    recipient_phone: "0912345678",
+    recipient_address: "台北市",
+  });
 });
 
 test("OAuth metadata is exposed for ChatGPT remote MCP discovery", async () => {

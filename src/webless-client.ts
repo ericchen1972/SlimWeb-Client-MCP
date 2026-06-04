@@ -12,13 +12,26 @@ export interface ProductDetailInput {
   productId: string;
 }
 
-export interface OrderSummaryInput {
-  orderToken: string;
+export interface ProductVerifyInput {
+  productId: string;
+  quantity?: number;
 }
 
 export interface OrderListInput {
   status?: "all" | "pending" | "completed";
   limit?: number;
+}
+
+export interface OrderPreviewInput {
+  items: Array<{
+    productId: number;
+    quantity: number;
+  }>;
+  buyerName: string;
+  buyerPhone: string;
+  recipientName: string;
+  recipientPhone: string;
+  recipientAddress: string;
 }
 
 export type WeblessJson = Record<string, unknown>;
@@ -92,14 +105,14 @@ export class WeblessClient {
     return this.getJson(url);
   }
 
-  getOrderSummary(input: OrderSummaryInput): Promise<WeblessJson> {
+  verifyProduct(input: ProductVerifyInput): Promise<WeblessJson> {
     const url = this.url(
-      `/api/storefront/orders/${encodeURIComponent(input.orderToken)}`,
+      `/api/storefront/products/${encodeURIComponent(input.productId)}/verify`,
     );
     this.appendSite(url);
 
-    if (this.memberId !== undefined) {
-      url.searchParams.set("member_id", String(this.memberId));
+    if (input.quantity !== undefined) {
+      url.searchParams.set("quantity", String(input.quantity));
     }
 
     return this.getJson(url);
@@ -124,6 +137,38 @@ export class WeblessClient {
     return this.getJson(url);
   }
 
+  getCustomerContext(): Promise<WeblessJson> {
+    const url = this.url("/api/storefront/customer/context");
+    this.appendSite(url);
+
+    if (this.memberId !== undefined) {
+      url.searchParams.set("member_id", String(this.memberId));
+    }
+
+    return this.getJson(url);
+  }
+
+  getOrderPreview(input: OrderPreviewInput): Promise<WeblessJson> {
+    const url = this.url("/api/storefront/order-preview");
+    this.appendSite(url);
+
+    if (this.memberId !== undefined) {
+      url.searchParams.set("member_id", String(this.memberId));
+    }
+
+    return this.postJson(url, {
+      items: input.items.map((item) => ({
+        product_id: item.productId,
+        quantity: item.quantity,
+      })),
+      buyer_name: input.buyerName,
+      buyer_phone: input.buyerPhone,
+      recipient_name: input.recipientName,
+      recipient_phone: input.recipientPhone,
+      recipient_address: input.recipientAddress,
+    });
+  }
+
   private url(path: string): URL {
     return new URL(path, this.baseUrl);
   }
@@ -141,6 +186,32 @@ export class WeblessClient {
         headers: {
           Accept: "application/json",
         },
+      }),
+    );
+
+    const body = await readJsonBody(response);
+
+    if (!response.ok) {
+      const message = extractMessage(body) ?? response.statusText;
+      throw new Error(`Webless request failed: ${response.status} ${message}`);
+    }
+
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw new Error("Webless request failed: response body must be a JSON object");
+    }
+
+    return body as WeblessJson;
+  }
+
+  private async postJson(url: URL, payload: unknown): Promise<WeblessJson> {
+    const response = await this.fetchImpl(
+      new Request(url, {
+        method: "POST",
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
       }),
     );
 
