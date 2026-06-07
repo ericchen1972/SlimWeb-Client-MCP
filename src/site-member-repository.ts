@@ -61,7 +61,7 @@ export class PostgresSiteMemberRepository implements SiteMemberRepository {
     }
 
     return {
-      id: row.id,
+      id: numericId(row.id, "site id"),
       callbackCode: row.callback_code,
       name: row.name,
     };
@@ -166,12 +166,22 @@ export class PostgresSiteMemberRepository implements SiteMemberRepository {
 
 function memberFromRow(row: MemberRow): ClientMember {
   return {
-    id: row.id,
-    siteId: row.site_id,
+    id: numericId(row.id, "member id"),
+    siteId: numericId(row.site_id, "member site_id"),
     email: row.email,
     name: row.name,
     googleId: row.google_id,
   };
+}
+
+function numericId(value: number | string, label: string): number {
+  const id = typeof value === "number" ? value : Number.parseInt(value, 10);
+
+  if (!Number.isSafeInteger(id) || id <= 0) {
+    throw new Error(`Invalid ${label} returned from Webless database.`);
+  }
+
+  return id;
 }
 
 function databaseConfigFromEnv() {
@@ -190,8 +200,8 @@ function databaseConfigFromEnv() {
 }
 
 interface MemberRow {
-  id: number;
-  site_id: number;
+  id: number | string;
+  site_id: number | string;
   email: string;
   name: string;
   google_id: string;

@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { ZodError } from "zod";
 
 import type { ClientMcpConfig } from "./config.js";
 import {
@@ -21,8 +22,11 @@ import {
   type SiteMemberRepository,
 } from "./site-member-repository.js";
 import { createToolRegistry } from "./tools.js";
-import { WeblessClient } from "./webless-client.js";
+import { WeblessClient, WeblessRequestError } from "./webless-client.js";
 import {
+  productImagesWidgetContents,
+  productImagesWidgetResource,
+  PRODUCT_IMAGES_WIDGET_URI,
   productListWidgetContents,
   productListWidgetResource,
   PRODUCT_LIST_WIDGET_URI,
@@ -76,13 +80,30 @@ export function createRequestHandler(options: RequestHandlerOptions) {
         return;
       }
 
+      if (url.pathname === "/auth/login") {
+        handleAuthLogin(request, response, options);
+        return;
+      }
+
+      if (url.pathname === "/auth/google") {
+        await handleAuthGoogle(
+          request,
+          response,
+          options,
+          verifier,
+          repository,
+          sessionSecret,
+        );
+        return;
+      }
+
       if (url.pathname === "/oauth/authorize") {
-        await handleOAuthAuthorize(request, response, options);
+        await handleOAuthAuthorize(request, response, options, sessionSecret);
         return;
       }
 
       if (url.pathname === "/oauth/google") {
-        await handleOAuthGoogle(
+        await handleAuthGoogle(
           request,
           response,
           options,
@@ -328,6 +349,7 @@ async function handleOAuthAuthorize(
   request: IncomingMessage,
   response: ServerResponse,
   options: RequestHandlerOptions,
+  sessionSecret: string,
 ): Promise<void> {
   if (request.method !== "GET") {
     methodNotAllowed(response);
@@ -350,7 +372,112 @@ async function handleOAuthAuthorize(
     return;
   }
 
-  htmlResponse(response, 200, googleSignInPage(params, options));
+  const session = verifySessionToken(readSessionToken({
+    authorization: request.headers.authorization,
+    cookie: request.headers.cookie,
+  }), sessionSecret);
+
+  if (!session || session.callback_code !== siteCode) {
+    const next = sameOriginNextPath(`${url.pathname}${url.search}`);
+
+    redirectResponse(response, `/auth/login?next=${encodeURIComponent(next)}`);
+    return;
+  }
+
+  const redirectUrl = new URL(params.redirectUri);
+  redirectUrl.searchParams.set("code", createOAuthCode(session, params, sessionSecret));
+
+  if (params.state) {
+    redirectUrl.searchParams.set("state", params.state);
+  }
+
+  redirectResponse(response, redirectUrl.toString());
+}
+
+function handleAuthLogin(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: RequestHandlerOptions,
+): void {
+  if (request.method !== "GET") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const url = new URL(request.url ?? "/", publicBaseUrl(request, options));
+  const next = sameOriginNextPath(url.searchParams.get("next"));
+
+  htmlResponse(response, 200, googleSignInPage(next, options));
+}
+
+async function handleAuthGoogle(
+  request: IncomingMessage,
+  response: ServerResponse,
+  options: RequestHandlerOptions,
+  verifier: GoogleVerifier,
+  repository: SiteMemberRepository,
+  sessionSecret: string,
+): Promise<void> {
+  if (request.method !== "POST") {
+    methodNotAllowed(response);
+    return;
+  }
+
+  const body = await readAnyRequest(request);
+  const next = sameOriginNextPath(stringValue(body.next));
+  const nextUrl = new URL(next, publicBaseUrl(request, options));
+  const params = oauthParamsFromSearch(nextUrl.searchParams);
+  const validation = validateOAuthAuthorizeParams(params);
+
+  if (validation) {
+    jsonResponse(response, 400, { ok: false, error: validation });
+    return;
+  }
+
+  const siteCode = siteCodeFromResource(params.resource);
+
+  if (!siteCode) {
+    jsonResponse(response, 400, { ok: false, error: "Missing SlimWeb site MCP resource." });
+    return;
+  }
+
+  const site = await repository.findSiteByCallbackCode(siteCode);
+
+  if (!site) {
+    jsonResponse(response, 404, { ok: false, error: "Unknown SlimWeb site MCP code." });
+    return;
+  }
+
+  const credential = stringValue(body.credential) ?? "";
+  const profile = await verifier.verify(credential);
+  const member = await repository.provisionMember(site.id, profile);
+  const token = createSessionToken(
+    {
+      site_id: site.id,
+      callback_code: site.callbackCode,
+      member_id: member.id,
+      email: member.email,
+      google_id: member.googleId,
+    },
+    sessionSecret,
+  );
+
+  jsonResponse(response, 200, {
+    ok: true,
+    next,
+    site: {
+      id: site.id,
+      callback_code: site.callbackCode,
+      name: site.name,
+    },
+    member: {
+      id: member.id,
+      email: member.email,
+      name: member.name,
+    },
+  }, {
+    "set-cookie": sessionCookie(token, process.env.NODE_ENV === "production"),
+  });
 }
 
 async function handleOAuthGoogle(
@@ -451,7 +578,11 @@ async function handleOAuthToken(
     payload.typ !== "oauth_code" ||
     typeof payload.exp !== "number" ||
     payload.exp < Math.floor(Date.now() / 1000) ||
-    typeof payload.access_token !== "string" ||
+    typeof payload.site_id !== "number" ||
+    typeof payload.callback_code !== "string" ||
+    typeof payload.member_id !== "number" ||
+    typeof payload.email !== "string" ||
+    typeof payload.google_id !== "string" ||
     typeof payload.redirect_uri !== "string" ||
     typeof payload.client_id !== "string" ||
     typeof payload.code_challenge !== "string" ||
@@ -476,11 +607,25 @@ async function handleOAuthToken(
     return;
   }
 
+  const accessToken = createSessionToken(
+    {
+      site_id: payload.site_id,
+      callback_code: payload.callback_code,
+      member_id: payload.member_id,
+      email: payload.email,
+      google_id: payload.google_id,
+    },
+    sessionSecret,
+  );
+
   jsonResponse(response, 200, {
     token_type: "Bearer",
-    access_token: payload.access_token,
+    access_token: accessToken,
     expires_in: 60 * 60 * 24 * 7,
-    scope: "mcp",
+    scope: stringValue(payload.scope) ?? "mcp",
+  }, {
+    "cache-control": "no-store",
+    pragma: "no-cache",
   });
 }
 
@@ -565,8 +710,6 @@ async function handleMcp(
       ? (message.params as Record<string, unknown>)
       : {};
   const toolName = String(params.name ?? "");
-  const needsSession =
-    message.method === "tools/call" && toolRequiresSession(toolName);
   let session = verifySessionToken(
     readSessionToken({
       authorization: request.headers.authorization,
@@ -579,13 +722,19 @@ async function handleMcp(
     session = null;
   }
 
-  if (needsSession && !session) {
+  if (message.method === "tools/call" && toolRequiresSession(toolName) && !session) {
+    const resourceMetadata = protectedResourceMetadataUrl(request, site);
+
     jsonResponse(
       response,
       401,
-      mcpError(message.id ?? null, -32001, "Google login required for this site MCP."),
+      mcpError(message.id ?? null, -32001, "Google login required for this site MCP.", {
+        reason: "AUTH_REQUIRED",
+        resource_metadata: resourceMetadata,
+      }),
       {
-        "www-authenticate": protectedResourceChallenge(request, site),
+        "www-authenticate": protectedResourceChallenge(resourceMetadata),
+        "cache-control": "no-store",
       },
     );
     return;
@@ -619,7 +768,7 @@ async function handleMcpMessage(
     }
 
     case "resources/list": {
-      return mcpResult(id, { resources: [productListWidgetResource()] });
+      return mcpResult(id, { resources: [productListWidgetResource(), productImagesWidgetResource()] });
     }
 
     case "resources/read": {
@@ -629,11 +778,15 @@ async function handleMcpMessage(
           : {};
       const uri = String(params.uri ?? "");
 
-      if (uri !== PRODUCT_LIST_WIDGET_URI) {
-        return mcpError(id, -32002, `Unknown MCP resource: ${uri}`);
+      if (uri === PRODUCT_LIST_WIDGET_URI) {
+        return mcpResult(id, { contents: [productListWidgetContents()] });
       }
 
-      return mcpResult(id, { contents: [productListWidgetContents()] });
+      if (uri === PRODUCT_IMAGES_WIDGET_URI) {
+        return mcpResult(id, { contents: [productImagesWidgetContents()] });
+      }
+
+      return mcpError(id, -32002, `Unknown MCP resource: ${uri}`);
     }
 
     case "tools/call": {
@@ -642,10 +795,41 @@ async function handleMcpMessage(
           ? (message.params as Record<string, unknown>)
           : {};
       const registry = createSiteRegistry(site, options, session);
-      const result = await registry.callTool(
-        String(params.name ?? ""),
-        params.arguments ?? {},
-      );
+      let result;
+
+      try {
+        result = await registry.callTool(
+          String(params.name ?? ""),
+          params.arguments ?? {},
+        );
+      } catch (error) {
+        if (error instanceof ZodError) {
+          return mcpError(id, -32602, `Invalid arguments for ${String(params.name ?? "")}.`, {
+            reason: "INVALID_TOOL_ARGUMENTS",
+            issues: error.issues.map((issue) => ({
+              path: issue.path.join("."),
+              message: issue.message,
+            })),
+          });
+        }
+
+        if (error instanceof WeblessRequestError) {
+          console.warn("webless_tool_request_failed", {
+            tool: String(params.name ?? ""),
+            status: error.status,
+            url: redactUrl(error.url),
+            body: error.body,
+          });
+
+          return mcpError(id, -32010, error.message, {
+            reason: "WEBLESS_REQUEST_FAILED",
+            webless_status: error.status,
+            webless_body: safeErrorBody(error.body),
+          });
+        }
+
+        throw error;
+      }
 
       return mcpResult(id, result);
     }
@@ -667,7 +851,43 @@ function createSiteRegistry(
       memberId: session?.member_id,
       fetchImpl: options.fetchImpl,
     }),
+    session
+      ? {
+          authenticated: true,
+          customer: {
+            id: session.member_id,
+            email: session.email,
+            google_id: session.google_id,
+          },
+        }
+      : undefined,
   );
+}
+
+function redactUrl(value: string): string {
+  try {
+    const url = new URL(value);
+
+    if (url.searchParams.has("member_id")) {
+      url.searchParams.set("member_id", "[redacted]");
+    }
+
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+function safeErrorBody(body: unknown): unknown {
+  if (typeof body === "string") {
+    return body.slice(0, 500);
+  }
+
+  if (!body || typeof body !== "object") {
+    return body;
+  }
+
+  return body;
 }
 
 function toolRequiresSession(toolName: string): boolean {
@@ -675,6 +895,8 @@ function toolRequiresSession(toolName: string): boolean {
     "client_order_list",
     "client_customer_context",
     "client_order_preview",
+    "client_checkout_start",
+    "client_checkout_status",
   ].includes(toolName);
 }
 
@@ -707,7 +929,22 @@ function inputSchemaForTool(toolName: string) {
     };
   }
 
-  if (toolName === "client_product_detail") {
+  if (toolName === "client_product_cards") {
+    return {
+      type: "object",
+      properties: {
+        productIds: {
+          type: "array",
+          minItems: 1,
+          maxItems: 5,
+          items: { type: "string" },
+        },
+      },
+      required: ["productIds"],
+    };
+  }
+
+  if (toolName === "client_product_detail" || toolName === "client_product_images") {
     return {
       type: "object",
       properties: {
@@ -745,29 +982,38 @@ function inputSchemaForTool(toolName: string) {
     };
   }
 
-  if (toolName === "client_order_preview") {
+  if (toolName === "client_order_preview" || toolName === "client_checkout_start") {
+    const properties: Record<string, unknown> = {
+      items: {
+        type: "array",
+        minItems: 1,
+        maxItems: 10,
+        items: {
+          type: "object",
+          properties: {
+            productId: { type: "number", minimum: 1 },
+            quantity: { type: "number", minimum: 1, maximum: 99 },
+          },
+          required: ["productId", "quantity"],
+        },
+      },
+      buyerName: { type: "string" },
+      buyerPhone: { type: "string" },
+      recipientName: { type: "string" },
+      recipientPhone: { type: "string" },
+      recipientAddress: { type: "string" },
+    };
+
+    if (toolName === "client_checkout_start") {
+      properties.paymentMethod = { type: "string", enum: ["online", "pickup_pay", "cod"] };
+      properties.logisticsMethod = { type: "string", enum: ["home_delivery", "cvs_pickup"] };
+      properties.reusePreviousStore = { type: "boolean" };
+      properties.confirmBeforeCreate = { type: "boolean" };
+    }
+
     return {
       type: "object",
-      properties: {
-        items: {
-          type: "array",
-          minItems: 1,
-          maxItems: 10,
-          items: {
-            type: "object",
-            properties: {
-              productId: { type: "number", minimum: 1 },
-              quantity: { type: "number", minimum: 1, maximum: 99 },
-            },
-            required: ["productId", "quantity"],
-          },
-        },
-        buyerName: { type: "string" },
-        buyerPhone: { type: "string" },
-        recipientName: { type: "string" },
-        recipientPhone: { type: "string" },
-        recipientAddress: { type: "string" },
-      },
+      properties,
       required: [
         "items",
         "buyerName",
@@ -775,7 +1021,18 @@ function inputSchemaForTool(toolName: string) {
         "recipientName",
         "recipientPhone",
         "recipientAddress",
+        ...(toolName === "client_checkout_start" ? ["paymentMethod", "logisticsMethod"] : []),
       ],
+    };
+  }
+
+  if (toolName === "client_checkout_status") {
+    return {
+      type: "object",
+      properties: {
+        checkoutToken: { type: "string" },
+      },
+      required: ["checkoutToken"],
     };
   }
 
@@ -883,8 +1140,17 @@ function mcpResult(id: unknown, result: unknown) {
   return { jsonrpc: "2.0", id, result };
 }
 
-function mcpError(id: unknown, code: number, message: string) {
-  return { jsonrpc: "2.0", id, error: { code, message } };
+function mcpError(
+  id: unknown,
+  code: number,
+  message: string,
+  data?: Record<string, unknown>,
+) {
+  return {
+    jsonrpc: "2.0",
+    id,
+    error: data ? { code, message, data } : { code, message },
+  };
 }
 
 interface OAuthAuthorizeParams {
@@ -952,33 +1218,65 @@ function siteCodeFromResource(resource: string): string | null {
   }
 }
 
-function googleSignInPage(
+function createOAuthCode(
+  session: ClientSessionPayload,
   params: OAuthAuthorizeParams,
+  secret: string,
+): string {
+  const now = Math.floor(Date.now() / 1000);
+
+  return createSignedToken(
+    {
+      typ: "oauth_code",
+      site_id: session.site_id,
+      callback_code: session.callback_code,
+      member_id: session.member_id,
+      email: session.email,
+      google_id: session.google_id,
+      client_id: params.clientId,
+      redirect_uri: params.redirectUri,
+      scope: "mcp",
+      code_challenge: params.codeChallenge,
+      code_challenge_method: params.codeChallengeMethod,
+      iat: now,
+      exp: now + 10 * 60,
+    },
+    secret,
+  );
+}
+
+function sameOriginNextPath(next: string | null | undefined): string {
+  if (!next) {
+    return "/auth/success";
+  }
+
+  try {
+    if (next.startsWith("/")) {
+      const parsed = new URL(next, "https://local.invalid");
+
+      return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+
+    const parsed = new URL(next);
+
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return "/auth/success";
+  }
+}
+
+function googleSignInPage(
+  next: string,
   options: RequestHandlerOptions,
 ): string {
   const clientId = options.config.googleClientId ??
     "27587628711-upin8ch154kqrl88k41978q660oc0pbg.apps.googleusercontent.com";
-  const hiddenInputs = [
-    ["client_id", params.clientId],
-    ["redirect_uri", params.redirectUri],
-    ["response_type", params.responseType],
-    ["state", params.state],
-    ["resource", params.resource],
-    ["code_challenge", params.codeChallenge],
-    ["code_challenge_method", params.codeChallengeMethod],
-  ]
-    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
-    .join("");
 
   return `
     <main style="font-family: system-ui, sans-serif; max-width: 420px; margin: 48px auto; line-height: 1.5;">
       <h1>SlimWeb Client MCP</h1>
       <p>請使用 Google 登入以連接此站台的消費者 MCP。</p>
       <script src="https://accounts.google.com/gsi/client" async defer></script>
-      <form id="oauth-form" method="post" action="/oauth/google">
-        ${hiddenInputs}
-        <input type="hidden" id="credential" name="credential">
-      </form>
       <div id="g_id_onload"
         data-client_id="${escapeHtml(clientId)}"
         data-context="signin"
@@ -987,9 +1285,21 @@ function googleSignInPage(
         data-auto_prompt="false"></div>
       <div class="g_id_signin" data-type="standard" data-size="large" data-theme="outline" data-text="signin_with" data-shape="rectangular"></div>
       <script>
-        function slimwebClientMcpGoogle(response) {
-          document.getElementById('credential').value = response.credential;
-          document.getElementById('oauth-form').submit();
+        async function slimwebClientMcpGoogle(response) {
+          const result = await fetch('/auth/google', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              credential: response.credential,
+              next: ${JSON.stringify(next)}
+            })
+          });
+          const payload = await result.json().catch(function() { return {}; });
+          if (!result.ok) {
+            alert('登入失敗：' + (payload.error || '請重新再試。'));
+            return;
+          }
+          window.location.href = payload.next || ${JSON.stringify(next)};
         }
       </script>
     </main>
@@ -1021,14 +1331,17 @@ function publicBaseUrl(
   return `${proto}://${host}`;
 }
 
-function protectedResourceChallenge(
+function protectedResourceMetadataUrl(
   request: IncomingMessage,
   site: ClientSite,
 ): string {
   const proto = String(request.headers["x-forwarded-proto"] ?? "http").split(",")[0].trim();
   const host = request.headers.host ?? "localhost";
-  const resourceMetadataUrl = `${proto}://${host}/.well-known/oauth-protected-resource/sites/${encodeURIComponent(site.callbackCode)}/mcp`;
 
+  return `${proto}://${host}/.well-known/oauth-protected-resource/sites/${encodeURIComponent(site.callbackCode)}/mcp`;
+}
+
+function protectedResourceChallenge(resourceMetadataUrl: string): string {
   return `Bearer resource_metadata="${resourceMetadataUrl}"`;
 }
 

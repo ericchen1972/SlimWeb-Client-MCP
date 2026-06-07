@@ -1,4 +1,5 @@
 export const PRODUCT_LIST_WIDGET_URI = "ui://widget/product-list.html";
+export const PRODUCT_IMAGES_WIDGET_URI = "ui://widget/product-images.html";
 export const MCP_APP_HTML_MIME_TYPE = "text/html;profile=mcp-app";
 export const PRODUCT_LIST_WIDGET_DOMAIN = "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app";
 
@@ -553,6 +554,252 @@ const PRODUCT_LIST_WIDGET_HTML = `
 </script>
 `.trim();
 
+const PRODUCT_IMAGES_WIDGET_HTML = `
+<div id="root" class="slimweb-gallery" aria-live="polite">
+  <div class="empty">Loading product images...</div>
+</div>
+<style>
+  :root {
+    color-scheme: light dark;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  body {
+    margin: 0;
+    background: transparent;
+    color: CanvasText;
+  }
+  .slimweb-gallery {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    padding: 12px;
+    box-sizing: border-box;
+  }
+  .gallery-header {
+    grid-column: 1 / -1;
+    padding: 4px 0 2px;
+  }
+  .gallery-title {
+    margin: 0;
+    font-size: 14px;
+    line-height: 1.35;
+    font-weight: 800;
+    overflow-wrap: anywhere;
+  }
+  .gallery-meta {
+    margin: 4px 0 0;
+    font-size: 12px;
+    color: color-mix(in srgb, CanvasText 62%, transparent);
+  }
+  .image-card {
+    border: 1px solid color-mix(in srgb, CanvasText 16%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, Canvas 94%, CanvasText 6%);
+    overflow: hidden;
+    min-width: 0;
+  }
+  .image-card img {
+    display: block;
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    object-fit: contain;
+    background: color-mix(in srgb, CanvasText 8%, transparent);
+  }
+  .image-caption {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 9px 10px;
+    font-size: 12px;
+    line-height: 1.35;
+  }
+  .image-caption span:first-child {
+    overflow-wrap: anywhere;
+  }
+  .image-caption span:last-child {
+    color: color-mix(in srgb, CanvasText 62%, transparent);
+    white-space: nowrap;
+  }
+  .empty {
+    grid-column: 1 / -1;
+    padding: 16px;
+    font-size: 13px;
+    color: color-mix(in srgb, CanvasText 62%, transparent);
+  }
+</style>
+<script>
+  const root = document.getElementById("root");
+
+  function objectValue(value) {
+    return value && typeof value === "object" ? value : null;
+  }
+
+  function text(value, fallback = "") {
+    return typeof value === "string" && value.trim() ? value : fallback;
+  }
+
+  function proxyImageUrl(imageUrl) {
+    try {
+      const url = new URL(imageUrl);
+
+      if (!["http:", "https:"].includes(url.protocol)) {
+        return imageUrl;
+      }
+
+      return "${PRODUCT_LIST_WIDGET_DOMAIN}/image-proxy?url=" + encodeURIComponent(url.toString());
+    } catch {
+      return imageUrl;
+    }
+  }
+
+  function enqueueObjectValues(queue, candidate) {
+    for (const value of Object.values(candidate)) {
+      if (objectValue(value)) {
+        queue.push(value);
+      }
+    }
+  }
+
+  function galleryPayload(value) {
+    const seen = new Set();
+    const queue = [value];
+
+    while (queue.length > 0) {
+      const candidate = objectValue(queue.shift());
+      if (!candidate || seen.has(candidate)) continue;
+      seen.add(candidate);
+
+      if (objectValue(candidate.product) && Array.isArray(candidate.images)) {
+        return candidate;
+      }
+
+      if (objectValue(candidate.product) && Array.isArray(candidate.product.images)) {
+        return {
+          site: candidate.site,
+          product: candidate.product,
+          images: candidate.product.images,
+        };
+      }
+
+      queue.push(
+        candidate.structuredContent,
+        candidate.toolOutput,
+        candidate.toolResponse,
+        candidate.toolResponseMetadata,
+        candidate.call_tool_result,
+        candidate.mcp_tool_result,
+        candidate.result,
+        candidate.params,
+        candidate.globals,
+      );
+      enqueueObjectValues(queue, candidate);
+    }
+
+    return null;
+  }
+
+  function render(payload) {
+    const gallery = galleryPayload(payload);
+    if (!gallery) {
+      root.innerHTML = '<div class="empty">Waiting for product image data...</div>';
+      window.openai?.notifyIntrinsicHeight?.();
+      return;
+    }
+
+    const product = objectValue(gallery.product) || {};
+    const images = Array.isArray(gallery.images) ? gallery.images : [];
+    if (images.length === 0) {
+      root.innerHTML = '<div class="empty">No product images found.</div>';
+      window.openai?.notifyIntrinsicHeight?.();
+      return;
+    }
+
+    const header = document.createElement("header");
+    header.className = "gallery-header";
+    const title = document.createElement("h3");
+    title.className = "gallery-title";
+    title.textContent = text(product.name, "Product images");
+    const meta = document.createElement("p");
+    meta.className = "gallery-meta";
+    meta.textContent = "Product ID " + String(product.id ?? "-") + " · " + String(images.length) + " images";
+    header.append(title, meta);
+
+    root.replaceChildren(header, ...images.slice(0, 24).map((image, index) => {
+      const card = document.createElement("figure");
+      card.className = "image-card";
+
+      const img = document.createElement("img");
+      img.src = proxyImageUrl(text(image?.url || image?.path));
+      img.alt = text(image?.alt, text(product.name, "Product image"));
+      img.loading = "lazy";
+      card.append(img);
+
+      const caption = document.createElement("figcaption");
+      caption.className = "image-caption";
+      const label = document.createElement("span");
+      label.textContent = text(image?.alt, text(product.name, "Product image"));
+      const type = document.createElement("span");
+      type.textContent = text(image?.type, "image") + " #" + String(index + 1);
+      caption.append(label, type);
+      card.append(caption);
+
+      return card;
+    }));
+
+    window.openai?.notifyIntrinsicHeight?.();
+  }
+
+  render({
+    toolOutput: window.openai?.toolOutput,
+    toolResponseMetadata: window.openai?.toolResponseMetadata,
+  });
+
+  window.addEventListener("openai:set_globals", (event) => render(event.detail), { passive: true });
+  window.addEventListener("message", (event) => {
+    const message = event.data;
+    if (!message || message.jsonrpc !== "2.0" || message.method !== "ui/notifications/tool-result") return;
+    render(message.params);
+  }, { passive: true });
+</script>
+`.trim();
+
+function widgetCsp() {
+  return {
+    connectDomains: [
+      "https://slimweb.tw",
+      PRODUCT_LIST_WIDGET_DOMAIN,
+    ],
+    resourceDomains: [
+      PRODUCT_LIST_WIDGET_DOMAIN,
+    ],
+  };
+}
+
+function widgetContents(uri: string, html: string, description: string) {
+  const csp = widgetCsp();
+
+  return {
+    uri,
+    mimeType: MCP_APP_HTML_MIME_TYPE,
+    text: html,
+    _meta: {
+      ui: {
+        prefersBorder: true,
+        csp,
+        domain: PRODUCT_LIST_WIDGET_DOMAIN,
+      },
+      "openai/widgetDescription": description,
+      "openai/widgetPrefersBorder": true,
+      "openai/widgetDomain": PRODUCT_LIST_WIDGET_DOMAIN,
+      "openai/widgetCSP": {
+        connect_domains: csp.connectDomains,
+        resource_domains: csp.resourceDomains,
+        redirect_domains: ["https://slimweb.tw"],
+      },
+    },
+  };
+}
+
 export function productListWidgetResource() {
   return {
     uri: PRODUCT_LIST_WIDGET_URI,
@@ -563,42 +810,26 @@ export function productListWidgetResource() {
 }
 
 export function productListWidgetContents() {
-  const csp = {
-    connectDomains: [
-      "https://slimweb.tw",
-      "https://slimweb-client-mcp-aakwcbp2ca-de.a.run.app",
-    ],
-    resourceDomains: [
-      PRODUCT_LIST_WIDGET_DOMAIN,
-      "https://slimweb.tw",
-      "https://i1.momoshop.com.tw",
-      "https://i2.momoshop.com.tw",
-      "https://i3.momoshop.com.tw",
-      "https://i4.momoshop.com.tw",
-      "https://img1.momoshop.com.tw",
-      "https://img2.momoshop.com.tw",
-      "https://img3.momoshop.com.tw",
-    ],
-  };
+  return widgetContents(
+    PRODUCT_LIST_WIDGET_URI,
+    PRODUCT_LIST_WIDGET_HTML,
+    "SlimWeb storefront product search results with images, prices, and product links.",
+  );
+}
 
+export function productImagesWidgetResource() {
   return {
-    uri: PRODUCT_LIST_WIDGET_URI,
+    uri: PRODUCT_IMAGES_WIDGET_URI,
+    name: "SlimWeb product images",
+    description: "Displays SlimWeb storefront product detail images through the SlimWeb image proxy.",
     mimeType: MCP_APP_HTML_MIME_TYPE,
-    text: PRODUCT_LIST_WIDGET_HTML,
-    _meta: {
-      ui: {
-        prefersBorder: true,
-        csp,
-        domain: PRODUCT_LIST_WIDGET_DOMAIN,
-      },
-      "openai/widgetDescription": "SlimWeb storefront product search results with images, prices, and product links.",
-      "openai/widgetPrefersBorder": true,
-      "openai/widgetDomain": PRODUCT_LIST_WIDGET_DOMAIN,
-      "openai/widgetCSP": {
-        connect_domains: csp.connectDomains,
-        resource_domains: csp.resourceDomains,
-        redirect_domains: ["https://slimweb.tw"],
-      },
-    },
   };
+}
+
+export function productImagesWidgetContents() {
+  return widgetContents(
+    PRODUCT_IMAGES_WIDGET_URI,
+    PRODUCT_IMAGES_WIDGET_HTML,
+    "SlimWeb storefront product detail image gallery.",
+  );
 }

@@ -34,7 +34,32 @@ export interface OrderPreviewInput {
   recipientAddress: string;
 }
 
+export interface CheckoutStartInput extends OrderPreviewInput {
+  paymentMethod: "online" | "pickup_pay" | "cod";
+  logisticsMethod: "home_delivery" | "cvs_pickup";
+  reusePreviousStore?: boolean;
+  confirmBeforeCreate?: boolean;
+}
+
+export interface CheckoutStatusInput {
+  checkoutToken: string;
+}
+
 export type WeblessJson = Record<string, unknown>;
+
+export class WeblessRequestError extends Error {
+  readonly status: number;
+  readonly body: unknown;
+  readonly url: string;
+
+  constructor(status: number, message: string, body: unknown, url: URL) {
+    super(`Webless request failed: ${status} ${message}`);
+    this.name = "WeblessRequestError";
+    this.status = status;
+    this.body = body;
+    this.url = url.toString();
+  }
+}
 
 export interface WeblessClientOptions {
   baseUrl: string;
@@ -66,10 +91,7 @@ export class WeblessClient {
   searchCatalog(input: CatalogSearchInput): Promise<WeblessJson> {
     const url = this.url("/api/storefront/catalog/search");
     url.searchParams.set("q", input.query);
-
-    if (input.limit !== undefined) {
-      url.searchParams.set("limit", String(input.limit));
-    }
+    url.searchParams.set("limit", String(input.limit ?? 2));
 
     if (input.minPrice !== undefined) {
       url.searchParams.set("min_price", String(input.minPrice));
@@ -169,6 +191,44 @@ export class WeblessClient {
     });
   }
 
+  startCheckout(input: CheckoutStartInput): Promise<WeblessJson> {
+    const url = this.url("/api/storefront/checkouts");
+    this.appendSite(url);
+
+    if (this.memberId !== undefined) {
+      url.searchParams.set("member_id", String(this.memberId));
+    }
+
+    return this.postJson(url, {
+      items: input.items.map((item) => ({
+        product_id: item.productId,
+        quantity: item.quantity,
+      })),
+      buyer_name: input.buyerName,
+      buyer_phone: input.buyerPhone,
+      recipient_name: input.recipientName,
+      recipient_phone: input.recipientPhone,
+      recipient_address: input.recipientAddress,
+      payment_method: input.paymentMethod,
+      logistics_method: input.logisticsMethod,
+      reuse_previous_store: input.reusePreviousStore ?? false,
+      confirm_before_create: input.confirmBeforeCreate ?? false,
+    });
+  }
+
+  getCheckoutStatus(input: CheckoutStatusInput): Promise<WeblessJson> {
+    const url = this.url(
+      `/api/storefront/checkouts/${encodeURIComponent(input.checkoutToken)}`,
+    );
+    this.appendSite(url);
+
+    if (this.memberId !== undefined) {
+      url.searchParams.set("member_id", String(this.memberId));
+    }
+
+    return this.getJson(url);
+  }
+
   private url(path: string): URL {
     return new URL(path, this.baseUrl);
   }
@@ -193,7 +253,7 @@ export class WeblessClient {
 
     if (!response.ok) {
       const message = extractMessage(body) ?? response.statusText;
-      throw new Error(`Webless request failed: ${response.status} ${message}`);
+      throw new WeblessRequestError(response.status, message, body, url);
     }
 
     if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -219,7 +279,7 @@ export class WeblessClient {
 
     if (!response.ok) {
       const message = extractMessage(body) ?? response.statusText;
-      throw new Error(`Webless request failed: ${response.status} ${message}`);
+      throw new WeblessRequestError(response.status, message, body, url);
     }
 
     if (!body || typeof body !== "object" || Array.isArray(body)) {

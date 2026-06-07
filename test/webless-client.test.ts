@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { WeblessClient } from "../src/webless-client.js";
+import { WeblessClient, WeblessRequestError } from "../src/webless-client.js";
 
 test("getCatalogOverview sends site key to the storefront overview endpoint", async () => {
   const requests: Request[] = [];
@@ -43,6 +43,25 @@ test("searchCatalog sends query and site key to the storefront search endpoint",
     "https://example.test/api/storefront/catalog/search?q=tea&limit=5&site=site-1",
   );
   assert.deepEqual(result, { items: [{ id: "p1", name: "Tea" }] });
+});
+
+test("searchCatalog defaults to two products when no limit is provided", async () => {
+  const requests: Request[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    fetchImpl: async (input) => {
+      requests.push(input as Request);
+      return Response.json({ items: [] });
+    },
+  });
+
+  await client.searchCatalog({ query: "watch" });
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/catalog/search?q=watch&limit=2&site=site-1",
+  );
 });
 
 test("searchCatalog sends optional price and recommendation fields", async () => {
@@ -173,6 +192,75 @@ test("getOrderPreview posts confirmation fields to the storefront preview endpoi
   assert.deepEqual(result, { preview: { status: "ready" } });
 });
 
+test("startCheckout posts checkout session fields to the storefront checkout endpoint", async () => {
+  const requests: Request[] = [];
+  const bodies: unknown[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    memberId: 42,
+    fetchImpl: async (input) => {
+      const request = input as Request;
+      requests.push(request);
+      bodies.push(JSON.parse(await request.text()));
+      return Response.json({ checkout: { token: "chk_123", status: "waiting_store_selection" } });
+    },
+  });
+
+  const result = await client.startCheckout({
+    items: [{ productId: 123, quantity: 2 }],
+    buyerName: "Buyer",
+    buyerPhone: "0900000000",
+    recipientName: "Receiver",
+    recipientPhone: "0912345678",
+    recipientAddress: "台北市",
+    paymentMethod: "online",
+    logisticsMethod: "cvs_pickup",
+    reusePreviousStore: false,
+    confirmBeforeCreate: false,
+  });
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/checkouts?site=site-1&member_id=42",
+  );
+  assert.equal(requests[0].method, "POST");
+  assert.deepEqual(bodies[0], {
+    items: [{ product_id: 123, quantity: 2 }],
+    buyer_name: "Buyer",
+    buyer_phone: "0900000000",
+    recipient_name: "Receiver",
+    recipient_phone: "0912345678",
+    recipient_address: "台北市",
+    payment_method: "online",
+    logistics_method: "cvs_pickup",
+    reuse_previous_store: false,
+    confirm_before_create: false,
+  });
+  assert.deepEqual(result, { checkout: { token: "chk_123", status: "waiting_store_selection" } });
+});
+
+test("getCheckoutStatus fetches a checkout session by token", async () => {
+  const requests: Request[] = [];
+  const client = new WeblessClient({
+    baseUrl: "https://example.test",
+    siteKey: "site-1",
+    memberId: 42,
+    fetchImpl: async (input) => {
+      requests.push(input as Request);
+      return Response.json({ checkout: { token: "chk_123", status: "waiting_payment" } });
+    },
+  });
+
+  const result = await client.getCheckoutStatus({ checkoutToken: "chk_123" });
+
+  assert.equal(
+    requests[0].url,
+    "https://example.test/api/storefront/checkouts/chk_123?site=site-1&member_id=42",
+  );
+  assert.deepEqual(result, { checkout: { token: "chk_123", status: "waiting_payment" } });
+});
+
 test("requests throw a structured error for non-2xx Webless responses", async () => {
   const client = new WeblessClient({
     baseUrl: "https://example.test",
@@ -185,6 +273,11 @@ test("requests throw a structured error for non-2xx Webless responses", async ()
 
   await assert.rejects(
     () => client.getProductDetail({ productId: "missing" }),
-    /Webless request failed: 404 Not found/,
+    (error) => {
+      assert.ok(error instanceof WeblessRequestError);
+      assert.equal(error.status, 404);
+      assert.deepEqual(error.body, { message: "Not found" });
+      return true;
+    },
   );
 });

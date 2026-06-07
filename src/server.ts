@@ -5,6 +5,9 @@ import type { ClientMcpConfig } from "./config.js";
 import { WeblessClient } from "./webless-client.js";
 import { createToolRegistry, type ToolRegistry } from "./tools.js";
 import {
+  productImagesWidgetContents,
+  productImagesWidgetResource,
+  PRODUCT_IMAGES_WIDGET_URI,
   productListWidgetContents,
   productListWidgetResource,
   PRODUCT_LIST_WIDGET_URI,
@@ -55,6 +58,21 @@ export function registerConsumerResources(server: McpServer): void {
     },
     async () => ({
       contents: [productListWidgetContents()],
+    }),
+  );
+
+  const imageResource = productImagesWidgetResource();
+
+  server.registerResource(
+    "slimweb_product_images_widget",
+    PRODUCT_IMAGES_WIDGET_URI,
+    {
+      title: imageResource.name,
+      description: imageResource.description,
+      mimeType: imageResource.mimeType,
+    },
+    async () => ({
+      contents: [productImagesWidgetContents()],
     }),
   );
 }
