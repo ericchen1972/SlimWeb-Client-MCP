@@ -749,6 +749,7 @@ async function withApp(
     config: {
       baseUrl: "https://webless.example.test",
       sessionSecret,
+      mcpSecret: "test-mcp-secret",
     },
     googleVerifier: {
       verify: async () => ({

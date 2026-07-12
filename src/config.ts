@@ -1,6 +1,7 @@
 export interface ClientMcpConfig {
   baseUrl: string;
   siteKey?: string;
+  mcpSecret?: string;
   sessionSecret?: string;
   publicBaseUrl?: string;
   googleClientId?: string;
@@ -11,6 +12,7 @@ export interface ClientMcpConfig {
 export interface ConfigEnv {
   WEBLESS_BASE_URL?: string;
   WEBLESS_SITE_KEY?: string;
+  WEBLESS_MCP_SECRET?: string;
   MCP_SESSION_SECRET?: string;
   PUBLIC_BASE_URL?: string;
   GOOGLE_CLIENT_ID?: string;
@@ -31,6 +33,10 @@ export function loadConfig(env: ConfigEnv = process.env): ClientMcpConfig {
 
   if (env.WEBLESS_SITE_KEY?.trim()) {
     config.siteKey = env.WEBLESS_SITE_KEY.trim();
+  }
+
+  if (env.WEBLESS_MCP_SECRET?.trim()) {
+    config.mcpSecret = env.WEBLESS_MCP_SECRET.trim();
   }
 
   if (env.MCP_SESSION_SECRET?.trim()) {

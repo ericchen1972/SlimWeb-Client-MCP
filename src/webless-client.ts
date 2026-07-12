@@ -65,6 +65,7 @@ export interface WeblessClientOptions {
   baseUrl: string;
   siteKey?: string;
   memberId?: number;
+  mcpSecret?: string;
   fetchImpl?: (input: Request) => Promise<Response>;
 }
 
@@ -72,12 +73,14 @@ export class WeblessClient {
   private readonly baseUrl: string;
   private readonly siteKey?: string;
   private readonly memberId?: number;
+  private readonly mcpSecret?: string;
   private readonly fetchImpl: (input: Request) => Promise<Response>;
 
   constructor(options: WeblessClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.siteKey = options.siteKey;
     this.memberId = options.memberId;
+    this.mcpSecret = options.mcpSecret;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -156,7 +159,7 @@ export class WeblessClient {
       url.searchParams.set("limit", String(input.limit));
     }
 
-    return this.getJson(url);
+    return this.getJson(url, true);
   }
 
   getCustomerContext(): Promise<WeblessJson> {
@@ -167,7 +170,7 @@ export class WeblessClient {
       url.searchParams.set("member_id", String(this.memberId));
     }
 
-    return this.getJson(url);
+    return this.getJson(url, true);
   }
 
   getOrderPreview(input: OrderPreviewInput): Promise<WeblessJson> {
@@ -188,7 +191,7 @@ export class WeblessClient {
       recipient_name: input.recipientName,
       recipient_phone: input.recipientPhone,
       recipient_address: input.recipientAddress,
-    });
+    }, true);
   }
 
   startCheckout(input: CheckoutStartInput): Promise<WeblessJson> {
@@ -213,7 +216,7 @@ export class WeblessClient {
       logistics_method: input.logisticsMethod,
       reuse_previous_store: input.reusePreviousStore ?? false,
       confirm_before_create: input.confirmBeforeCreate ?? false,
-    });
+    }, true);
   }
 
   getCheckoutStatus(input: CheckoutStatusInput): Promise<WeblessJson> {
@@ -226,7 +229,7 @@ export class WeblessClient {
       url.searchParams.set("member_id", String(this.memberId));
     }
 
-    return this.getJson(url);
+    return this.getJson(url, true);
   }
 
   private url(path: string): URL {
@@ -239,12 +242,13 @@ export class WeblessClient {
     }
   }
 
-  private async getJson(url: URL): Promise<WeblessJson> {
+  private async getJson(url: URL, protectedRequest = false): Promise<WeblessJson> {
     const response = await this.fetchImpl(
       new Request(url, {
         method: "GET",
         headers: {
           Accept: "application/json",
+          ...this.protectedHeaders(protectedRequest),
         },
       }),
     );
@@ -263,13 +267,14 @@ export class WeblessClient {
     return body as WeblessJson;
   }
 
-  private async postJson(url: URL, payload: unknown): Promise<WeblessJson> {
+  private async postJson(url: URL, payload: unknown, protectedRequest = false): Promise<WeblessJson> {
     const response = await this.fetchImpl(
       new Request(url, {
         method: "POST",
         headers: {
           Accept: "application/json",
           "Content-Type": "application/json",
+          ...this.protectedHeaders(protectedRequest),
         },
         body: JSON.stringify(payload),
       }),
@@ -287,6 +292,18 @@ export class WeblessClient {
     }
 
     return body as WeblessJson;
+  }
+
+  private protectedHeaders(protectedRequest: boolean): Record<string, string> {
+    if (!protectedRequest) {
+      return {};
+    }
+
+    if (!this.mcpSecret) {
+      throw new Error("WEBLESS_MCP_SECRET is required for customer and order requests");
+    }
+
+    return { Authorization: `Bearer ${this.mcpSecret}` };
   }
 }
 

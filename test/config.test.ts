@@ -7,11 +7,13 @@ test("loadConfig normalizes the Webless base URL and optional site key", () => {
   const config = loadConfig({
     WEBLESS_BASE_URL: "https://example.test/",
     WEBLESS_SITE_KEY: "site-1",
+    WEBLESS_MCP_SECRET: "test-secret",
   });
 
   assert.deepEqual(config, {
     baseUrl: "https://example.test",
     siteKey: "site-1",
+    mcpSecret: "test-secret",
   });
 });
 

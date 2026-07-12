@@ -849,6 +849,7 @@ function createSiteRegistry(
       baseUrl: options.config.baseUrl,
       siteKey: site.callbackCode,
       memberId: session?.member_id,
+      mcpSecret: options.config.mcpSecret,
       fetchImpl: options.fetchImpl,
     }),
     session
