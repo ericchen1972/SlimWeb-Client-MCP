@@ -788,3 +788,26 @@ function fakeRepository(
     ...overrides,
   };
 }
+
+
+test("HTTP tool schemas expose bounded quote identifiers and offline draft handoff", async () => {
+  await withApp(fakeRepository(), async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({jsonrpc: "2.0", id: 1, method: "tools/list"})});
+    const body = await response.json();
+    const verify = body.result.tools.find((entry: {name: string}) => entry.name === "client_product_verify");
+    assert.deepEqual(verify.inputSchema.properties.variantId, {type: "integer", minimum: 1});
+    for (const name of ["client_order_preview", "client_checkout_start"]) {
+      const tool = body.result.tools.find((entry: {name: string}) => entry.name === name);
+      const fields = tool.inputSchema.properties;
+      for (const field of ["memberCouponId", "discountCode", "recipientCountryCode", "storefrontPaymentMethod", "paymentMethod", "logisticsMethod"]) assert.ok(fields[field], field);
+      for (const field of ["variantId", "key", "isAddOn", "parentCartItemKey"]) assert.ok(fields.items.items.properties[field], field);
+      assert.equal(fields.items.maxItems, 10);
+      assert.equal(fields.items.items.properties.quantity.maximum, 99);
+      assert.ok(fields.paymentMethod.enum.includes("offline"));
+      assert.equal(fields.unitPrice, undefined);
+      assert.equal(fields.tierDiscount, undefined);
+      assert.equal(fields.gift, undefined);
+      if (name === "client_checkout_start") assert.ok(tool.description.includes("does not create an order"));
+    }
+  });
+});

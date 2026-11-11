@@ -437,6 +437,16 @@ const PRODUCT_LIST_WIDGET_HTML = `
 
   function renderOrderPreview(preview) {
     rendered = true;
+    const quoteZh = (navigator.language || "").toLowerCase().startsWith("zh");
+    const quoteLabel = (en, zh) => quoteZh ? zh : en;
+    const pricingStatus = preview.pricing_status || preview.status;
+    if (pricingStatus === "expired" || pricingStatus === "review_required") {
+      const notice = document.createElement("p");
+      notice.textContent = pricingStatus === "expired" ? quoteLabel("This checkout draft expired. Prepare a new quote.", "報價已過期，請重新取得報價。") : quoteLabel("Prices need review. Refresh your quote before checkout.", "價格需要重新確認，請更新報價後再結帳。");
+      root.replaceChildren(notice);
+      window.openai?.notifyIntrinsicHeight?.();
+      return;
+    }
     const items = Array.isArray(preview.items) ? preview.items : [];
     const totals = objectValue(preview.totals) || {};
     const buyer = objectValue(preview.buyer) || {};
@@ -479,12 +489,33 @@ const PRODUCT_LIST_WIDGET_HTML = `
     totalsSection.className = "preview-section";
     const totalsTable = document.createElement("table");
     totalsTable.className = "preview-table";
-    totalsTable.innerHTML =
-      "<tbody>" +
-      "<tr><th>Product subtotal</th><td>" + text(totals.subtotal?.formatted) + "</td></tr>" +
-      "<tr><th>Shipping fee</th><td>" + text(totals.shipping_fee?.formatted) + "</td></tr>" +
-      "<tr><th>Total</th><td>" + text(totals.total?.formatted) + "</td></tr>" +
-      "</tbody>";
+    const totalsBody = document.createElement("tbody");
+      for (const [key, label] of [
+        ["subtotal", quoteLabel("Product subtotal", "商品小計")],
+        ["quantity_discount", quoteLabel("Quantity discount", "數量折扣")],
+        ["member_tier_discount", quoteLabel("Member tier discount", "會員等級折扣")],
+        ["coupon_discount", quoteLabel("Coupon discount", "優惠券折抵")],
+        ["discount_code_discount", quoteLabel("Discount code discount", "折扣碼折抵")],
+        ["merchandise_total", quoteLabel("Merchandise total", "商品折扣後金額")],
+        ["shipping_fee", quoteLabel("Shipping fee", "運費")],
+        ["total", quoteLabel("Total", "總計")]
+      ]) {
+        if (!totals[key]) continue;
+        const row = document.createElement("tr");
+        const heading = document.createElement("th");
+        heading.textContent = label;
+        const amount = document.createElement("td");
+        amount.textContent = text(totals[key]?.formatted);
+        row.append(heading, amount);
+        totalsBody.append(row);
+      }
+      const gift = objectValue(preview.gift);
+      if (gift) {
+        const giftText = document.createElement("p");
+        giftText.textContent = quoteLabel("Gift: ", "贈品：") + text(gift.name || gift.product_name, quoteLabel("Eligible gift", "符合資格的贈品"));
+        totalsSection.append(giftText);
+      }
+    totalsTable.append(totalsBody);
     totalsSection.append(totalsTable);
     shell.append(totalsSection);
 

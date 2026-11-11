@@ -287,3 +287,22 @@ test("requests throw a structured error for non-2xx Webless responses", async ()
     },
   );
 });
+
+
+test("preview and draft forward identifier selections without client price fields", async () => {
+  const bodies: unknown[] = [];
+  const client = new WeblessClient({baseUrl: "https://example.test", siteKey: "site", memberId: 4, mcpSecret: "test", fetchImpl: async (request) => { bodies.push(await request.json()); return Response.json({}); }});
+  const input = {items: [{productId: 1, quantity: 2, variantId: 3, key: "1:3", isAddOn: true, parentCartItemKey: "4", price: 1}], memberCouponId: 5, discountCode: "SAVE", recipientCountryCode: "JP" as const, storefrontPaymentMethod: "bank_transfer", paymentMethod: "offline" as const, logisticsMethod: "home_delivery" as const, buyerName: "B", buyerPhone: "1", recipientName: "R", recipientPhone: "2", recipientAddress: "A"};
+  await client.getOrderPreview(input);
+  await client.startCheckout(input);
+  const expected = {items: [{product_id: 1, quantity: 2, variant_id: 3, key: "1:3", is_add_on: true, parent_cart_item_key: "4"}], member_coupon_id: 5, discount_code: "SAVE", recipient_country_code: "JP", storefront_payment_method: "bank_transfer", payment_method: "offline", logistics_method: "home_delivery", buyer_name: "B", buyer_phone: "1", recipient_name: "R", recipient_phone: "2", recipient_address: "A"};
+  assert.deepEqual(bodies, [expected, {...expected, reuse_previous_store: false, confirm_before_create: false}]);
+});
+
+
+test("product verification sends selected variant identity", async () => {
+ let url = "";
+ const client = new WeblessClient({baseUrl: "https://example.test", fetchImpl: async request => {url = request.url; return Response.json({available:false, reason:"variant_required"});}});
+ await client.verifyProduct({productId:"1",quantity:2,variantId:3});
+ assert.equal(new URL(url).searchParams.get("variant_id"),"3");
+});

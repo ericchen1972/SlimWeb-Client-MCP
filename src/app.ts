@@ -960,7 +960,8 @@ function inputSchemaForTool(toolName: string) {
       type: "object",
       properties: {
         productId: { type: "string" },
-        quantity: { type: "number", minimum: 1, maximum: 99 },
+        quantity: { type: "integer", minimum: 1, maximum: 99 },
+        variantId: { type: "integer", minimum: 1 },
       },
       required: ["productId"],
     };
@@ -993,11 +994,21 @@ function inputSchemaForTool(toolName: string) {
           type: "object",
           properties: {
             productId: { type: "number", minimum: 1 },
-            quantity: { type: "number", minimum: 1, maximum: 99 },
+            quantity: { type: "integer", minimum: 1, maximum: 99 },
+            variantId: { type: "integer", minimum: 1 },
+            key: { type: "string", minLength: 1, maxLength: 255 },
+            isAddOn: { type: "boolean" },
+            parentCartItemKey: { type: "string", minLength: 1, maxLength: 255 },
           },
           required: ["productId", "quantity"],
         },
       },
+      memberCouponId: { type: "integer", minimum: 1 },
+      discountCode: { type: "string", maxLength: 255 },
+      recipientCountryCode: { type: "string", enum: ["TW", "JP", "KR", "SG", "HK", "CN", "US", "CA", "GB", "AU"] },
+      storefrontPaymentMethod: { type: "string", minLength: 1, maxLength: 255 },
+      paymentMethod: { type: "string", enum: ["online", "pickup_pay", "cod", "offline"] },
+      logisticsMethod: { type: "string", enum: ["home_delivery", "cvs_pickup"] },
       buyerName: { type: "string" },
       buyerPhone: { type: "string" },
       recipientName: { type: "string" },
@@ -1006,7 +1017,7 @@ function inputSchemaForTool(toolName: string) {
     };
 
     if (toolName === "client_checkout_start") {
-      properties.paymentMethod = { type: "string", enum: ["online", "pickup_pay", "cod"] };
+      properties.paymentMethod = { type: "string", enum: ["online", "pickup_pay", "cod", "offline"] };
       properties.logisticsMethod = { type: "string", enum: ["home_delivery", "cvs_pickup"] };
       properties.reusePreviousStore = { type: "boolean" };
       properties.confirmBeforeCreate = { type: "boolean" };

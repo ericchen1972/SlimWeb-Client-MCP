@@ -358,7 +358,7 @@ test("client_checkout_start creates a checkout session draft", async () => {
       confirmBeforeCreate: true,
     },
   });
-  assert.match(result.content[0].text, /Checkout session/);
+  assert.match(result.content[0].text, /checkout draft/);
 });
 
 test("client_checkout_status fetches checkout session state by token", async () => {
@@ -385,4 +385,33 @@ test("unknown tools are rejected", async () => {
     () => registry.callTool("admin_refund_complete", {}),
     /Unknown tool: admin_refund_complete/,
   );
+});
+
+
+test("quote selections survive tool validation without accepting price authority", async () => {
+  let received: unknown;
+  const registry = createToolRegistry(fakeClient({getOrderPreview: async (input) => { received = input; return {preview: {}}; }}));
+  const input = {items: [{productId: 1, quantity: 2, variantId: 3, key: "1:3", isAddOn: true, parentCartItemKey: "4", unitPrice: 1}], buyerName: "B", buyerPhone: "1", recipientName: "R", recipientPhone: "2", recipientAddress: "A", memberCouponId: 7, discountCode: "SAVE", recipientCountryCode: "JP", storefrontPaymentMethod: "bank_transfer", paymentMethod: "offline", logisticsMethod: "home_delivery", tierDiscount: 99};
+  await registry.callTool("client_order_preview", input);
+  const {tierDiscount, ...expected} = input;
+  const {unitPrice, ...item} = input.items[0];
+  assert.deepEqual(received, {...expected, items: [item]});
+  await assert.rejects(() => registry.callTool("client_order_preview", {...input, recipientCountryCode: "XX"}));
+  await assert.rejects(() => registry.callTool("client_order_preview", {...input, items: [{productId: 1, quantity: 100}]}));
+});
+
+
+test("quote tool rejects invalid identifiers and excessive carts", async () => {
+  const registry = createToolRegistry(fakeClient());
+  const input = {items: [{productId: 1, quantity: 1}], buyerName: "B", buyerPhone: "1", recipientName: "R", recipientPhone: "2", recipientAddress: "A"};
+  for (const patch of [{memberCouponId: -1}, {items: [{productId: 1, quantity: 1, variantId: 0}]}, {items: Array(11).fill(input.items[0])}, {discountCode: "X".repeat(256)}, {items: [{productId: 1, quantity: 1, parentCartItemKey: "X".repeat(256)}]}]) await assert.rejects(() => registry.callTool("client_order_preview", {...input, ...patch}));
+});
+
+
+test("verification preserves variant and explains limited pricing scope", async () => {
+ let received: unknown;
+ const registry = createToolRegistry(fakeClient({verifyProduct: async input => {received=input;return {available:true};}}));
+ await registry.callTool("client_product_verify",{productId:"1",quantity:2,variantId:3});
+ assert.deepEqual(received,{productId:"1",quantity:2,variantId:3});
+ assert.ok(registry.listTools().find(tool=>tool.name==="client_product_verify")?.description.includes("client_order_preview"));
 });

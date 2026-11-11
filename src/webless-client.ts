@@ -14,6 +14,7 @@ export interface ProductDetailInput {
 
 export interface ProductVerifyInput {
   productId: string;
+  variantId?: number;
   quantity?: number;
 }
 
@@ -26,7 +27,17 @@ export interface OrderPreviewInput {
   items: Array<{
     productId: number;
     quantity: number;
+    variantId?: number;
+    key?: string;
+    isAddOn?: boolean;
+    parentCartItemKey?: string;
   }>;
+  memberCouponId?: number;
+  discountCode?: string;
+  recipientCountryCode?: "TW" | "JP" | "KR" | "SG" | "HK" | "CN" | "US" | "CA" | "GB" | "AU";
+  storefrontPaymentMethod?: string;
+  paymentMethod?: "online" | "pickup_pay" | "cod" | "offline";
+  logisticsMethod?: "home_delivery" | "cvs_pickup";
   buyerName: string;
   buyerPhone: string;
   recipientName: string;
@@ -35,7 +46,7 @@ export interface OrderPreviewInput {
 }
 
 export interface CheckoutStartInput extends OrderPreviewInput {
-  paymentMethod: "online" | "pickup_pay" | "cod";
+  paymentMethod: "online" | "pickup_pay" | "cod" | "offline";
   logisticsMethod: "home_delivery" | "cvs_pickup";
   reusePreviousStore?: boolean;
   confirmBeforeCreate?: boolean;
@@ -140,6 +151,7 @@ export class WeblessClient {
       url.searchParams.set("quantity", String(input.quantity));
     }
 
+    if (input.variantId !== undefined) url.searchParams.set("variant_id", String(input.variantId));
     return this.getJson(url);
   }
 
@@ -185,7 +197,17 @@ export class WeblessClient {
       items: input.items.map((item) => ({
         product_id: item.productId,
         quantity: item.quantity,
+        ...(item.variantId !== undefined ? {variant_id: item.variantId} : {}),
+        ...(item.key !== undefined ? {key: item.key} : {}),
+        ...(item.isAddOn !== undefined ? {is_add_on: item.isAddOn} : {}),
+        ...(item.parentCartItemKey !== undefined ? {parent_cart_item_key: item.parentCartItemKey} : {}),
       })),
+      ...(input.memberCouponId !== undefined ? {member_coupon_id: input.memberCouponId} : {}),
+      ...(input.discountCode !== undefined ? {discount_code: input.discountCode} : {}),
+      ...(input.recipientCountryCode !== undefined ? {recipient_country_code: input.recipientCountryCode} : {}),
+      ...(input.storefrontPaymentMethod !== undefined ? {storefront_payment_method: input.storefrontPaymentMethod} : {}),
+      ...(input.paymentMethod !== undefined ? {payment_method: input.paymentMethod} : {}),
+      ...(input.logisticsMethod !== undefined ? {logistics_method: input.logisticsMethod} : {}),
       buyer_name: input.buyerName,
       buyer_phone: input.buyerPhone,
       recipient_name: input.recipientName,
@@ -206,7 +228,17 @@ export class WeblessClient {
       items: input.items.map((item) => ({
         product_id: item.productId,
         quantity: item.quantity,
+        ...(item.variantId !== undefined ? {variant_id: item.variantId} : {}),
+        ...(item.key !== undefined ? {key: item.key} : {}),
+        ...(item.isAddOn !== undefined ? {is_add_on: item.isAddOn} : {}),
+        ...(item.parentCartItemKey !== undefined ? {parent_cart_item_key: item.parentCartItemKey} : {}),
       })),
+      ...(input.memberCouponId !== undefined ? {member_coupon_id: input.memberCouponId} : {}),
+      ...(input.discountCode !== undefined ? {discount_code: input.discountCode} : {}),
+      ...(input.recipientCountryCode !== undefined ? {recipient_country_code: input.recipientCountryCode} : {}),
+      ...(input.storefrontPaymentMethod !== undefined ? {storefront_payment_method: input.storefrontPaymentMethod} : {}),
+      ...(input.paymentMethod !== undefined ? {payment_method: input.paymentMethod} : {}),
+      ...(input.logisticsMethod !== undefined ? {logistics_method: input.logisticsMethod} : {}),
       buyer_name: input.buyerName,
       buyer_phone: input.buyerPhone,
       recipient_name: input.recipientName,

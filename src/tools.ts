@@ -78,6 +78,7 @@ const productCardsSchema = {
 } satisfies ZodRawShape;
 
 const productVerifySchema = {
+  variantId: z.number().int().min(1).optional(),
   productId: z.string().trim().min(1),
   quantity: z.number().int().min(1).max(99).optional(),
 } satisfies ZodRawShape;
@@ -90,9 +91,19 @@ const orderListSchema = {
 const customerContextSchema = {} satisfies ZodRawShape;
 
 const orderPreviewSchema = {
+  memberCouponId: z.number().int().min(1).optional(),
+  discountCode: z.string().trim().max(255).optional(),
+  recipientCountryCode: z.enum(["TW", "JP", "KR", "SG", "HK", "CN", "US", "CA", "GB", "AU"]).optional(),
+  storefrontPaymentMethod: z.string().trim().min(1).max(255).optional(),
+  paymentMethod: z.enum(["online", "pickup_pay", "cod", "offline"]).optional(),
+  logisticsMethod: z.enum(["home_delivery", "cvs_pickup"]).optional(),
   items: z.array(z.object({
     productId: z.number().int().min(1),
     quantity: z.number().int().min(1).max(99),
+    variantId: z.number().int().min(1).optional(),
+    key: z.string().trim().min(1).max(255).optional(),
+    isAddOn: z.boolean().optional(),
+    parentCartItemKey: z.string().trim().min(1).max(255).optional(),
   })).min(1).max(10),
   buyerName: z.string().trim().min(1),
   buyerPhone: z.string().trim().min(1),
@@ -103,7 +114,7 @@ const orderPreviewSchema = {
 
 const checkoutStartSchema = {
   ...orderPreviewSchema,
-  paymentMethod: z.enum(["online", "pickup_pay", "cod"]),
+  paymentMethod: z.enum(["online", "pickup_pay", "cod", "offline"]),
   logisticsMethod: z.enum(["home_delivery", "cvs_pickup"]),
   reusePreviousStore: z.boolean().optional(),
   confirmBeforeCreate: z.boolean().optional(),
@@ -345,7 +356,7 @@ export function createToolRegistry(
     {
       name: "client_product_detail",
       title: "Get storefront product detail",
-      description: "Retrieve customer-visible detail for one storefront product.",
+      description: "Retrieve customer-visible detail, variants, quantity discounts and current add-on rules/options for one storefront product. Select only identifiers returned by this site; confirm final member pricing with client_order_preview.",
       inputSchema: productDetailSchema,
       outputSchema: productDetailOutputSchema,
       _meta: {
@@ -395,7 +406,7 @@ export function createToolRegistry(
       name: "client_product_verify",
       title: "Verify storefront product for checkout",
       description:
-        "Verify one storefront product by product id before purchase. Use this when the shopper expresses purchase intent and the model already has a product id from current conversation or prior tool results. Returns current availability, stock, price, and line total for the requested quantity.",
+        "Verify one storefront product by product id before purchase. Use this when the shopper expresses purchase intent and the model already has a product id from current conversation or prior tool results. Verify the selected variant when applicable. Returns unit and line quantity pricing only; this is not a full member, coupon, discount code or shipping quote. Use client_order_preview for the complete current quote. If variant_required is returned, ask the shopper to select an available variant.",
       inputSchema: productVerifySchema,
       outputSchema: productVerifyOutputSchema,
       handler: (args: unknown) =>
@@ -415,7 +426,7 @@ export function createToolRegistry(
       name: "client_customer_context",
       title: "Get customer checkout context",
       description:
-        "Retrieve the signed-in customer's profile and last order so the model can decide which buyer, recipient, phone, and address fields are still missing before preparing a checkout confirmation table.",
+        "Retrieve the signed-in customer's profile and last order so the model can decide which buyer, recipient, phone, and address fields are still missing before preparing a checkout confirmation table. promotion_options exposes owned coupons, member tier, supported countries and actual payment methods. Use only those owned coupon identifiers and actual payment choices; discount codes must be supplied by the shopper.",
       inputSchema: customerContextSchema,
       outputSchema: customerContextOutputSchema,
       handler: () => client.getCustomerContext(),
@@ -424,7 +435,7 @@ export function createToolRegistry(
       name: "client_order_preview",
       title: "Prepare checkout confirmation table",
       description:
-        "Prepare a checkout confirmation table after product availability and required customer fields are known. This does not create an order or payment link. The table includes product id, product name, quantity, item totals, shipping fee, final total, buyer name/phone, recipient name/phone, and address. Do not include payment method or pickup/shipping method.",
+        "Prepare a checkout confirmation table after product availability and required customer fields are known. This does not create an order or payment link. The table includes product id, product name, quantity, item totals, shipping fee, final total, buyer name/phone, recipient name/phone, and address. Include selected promotions, variants, add-ons and recipient country to obtain current server pricing. Prices, tier discounts and gifts are resolved by the server.",
       inputSchema: orderPreviewSchema,
       outputSchema: orderPreviewOutputSchema,
       _meta: {
@@ -444,7 +455,7 @@ export function createToolRegistry(
       name: "client_checkout_start",
       title: "Start customer checkout session",
       description:
-        "Create a short-lived checkout session draft after products, quantity, recipient, payment method, and logistics method are known. This may return an action_url for external store selection or payment; it does not itself complete provider callbacks. For pickup payment with reusable previous store data, ask for explicit shopper confirmation before using this tool to create or prepare a direct order flow.",
+        "Prepare a 30-minute checkout draft and return an official storefront checkout link. The shopper must sign into the same member account in their browser and review current prices there. This tool does not create an order, initiate payment, or automatically select a previous store; reusePreviousStore is only a preference; the native checkout currently requires store selection again. Checkout remains subject to current availability and promotions.",
       inputSchema: checkoutStartSchema,
       outputSchema: checkoutOutputSchema,
       handler: (args: unknown) =>
@@ -454,7 +465,7 @@ export function createToolRegistry(
       name: "client_checkout_status",
       title: "Get customer checkout session status",
       description:
-        "Fetch a checkout session by checkoutToken after the shopper follows an action_url or says they completed store selection/payment. Use this instead of background polling.",
+        "Fetch the member-owned draft with refreshed pricing, or expired/review_required status without stale amounts. Direct the shopper to the official checkout link and same-member browser login. waiting_confirmation means native confirmation remains required; order_created means an order exists, not that payment completed. Use on shopper request instead of background polling.",
       inputSchema: checkoutStatusSchema,
       outputSchema: checkoutOutputSchema,
       handler: (args: unknown) =>
@@ -536,7 +547,7 @@ function toolResultText(name: string, result: WeblessJson): string {
   }
 
   if (name === "client_checkout_start") {
-    return "Checkout session has been prepared. Follow any action_url in the result if external store selection or payment is required.";
+    return "A checkout draft has been prepared; no order or payment has been created. Open action_url in the shopper’s browser, sign into the same member account, review current selections and explicitly confirm native checkout.";
   }
 
   if (name === "client_checkout_status") {
