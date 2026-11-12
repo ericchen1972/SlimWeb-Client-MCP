@@ -1,0 +1,77 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { createHash } from "node:crypto";
+import { PostgresSiteMemberRepository } from "../src/site-member-repository.js";
+
+const modulePath = "@electric-sql/pglite";
+test("PostgreSQL grant issuance, access reuse, rotation, expiry and revocation", async () => {
+ const { PGlite } = await import(modulePath!);
+ const db = new PGlite();
+ try {
+  await db.exec(`
+   create table consumer_oauth_clients (id varchar(64) primary key,name varchar(200),redirect_uris text,expires_at timestamp);
+   create table consumer_oauth_codes (token_hash char(64) primary key,payload text,expires_at timestamp);
+   create table members (id bigint primary key,site_id bigint not null,google_id text,status text);
+   create table consumer_member_grants (id bigserial primary key,site_id bigint,member_id bigint references members(id) on delete cascade,token_hash char(64) unique,expires_at timestamp,revoked_at timestamp,created_at timestamp,updated_at timestamp);
+   create table consumer_member_credentials (id bigserial primary key,grant_id bigint references consumer_member_grants(id) on delete cascade,site_id bigint,member_id bigint references members(id) on delete cascade,token_hash char(64) unique,expires_at timestamp,revoked_at timestamp,created_at timestamp,updated_at timestamp);
+   insert into members values (1,7,'verified-subject','active'),(2,7,'other','active');
+  `);
+  const repo = new PostgresSiteMemberRepository(db);
+  const clientId=await repo.registerOAuthClient("Client",["https://example.test/callback"]);
+  assert.deepEqual(await repo.findOAuthClient(clientId),{name:"Client",redirectUris:["https://example.test/callback"]});
+  await db.exec("alter table consumer_oauth_clients alter column redirect_uris type jsonb using redirect_uris::jsonb");
+  assert.deepEqual(await repo.findOAuthClient(clientId),{name:"Client",redirectUris:["https://example.test/callback"]});
+  assert.equal(await repo.findOAuthClient("unknown"),null);
+  await db.exec("update consumer_oauth_clients set expires_at=now()-interval '1 second'");
+  assert.equal(await repo.findOAuthClient(clientId),null);
+  const code = await repo.storeOAuthCode("encrypted-payload");
+  const consumes=await Promise.all([repo.consumeOAuthCode(code),repo.consumeOAuthCode(code)]);
+  assert.deepEqual(consumes.sort(),["encrypted-payload",null].sort());
+  const expiredCode=await repo.storeOAuthCode("expired-payload");
+  await db.exec("update consumer_oauth_codes set expires_at=now()-interval '1 second'");
+  assert.equal(await repo.consumeOAuthCode(expiredCode),null);
+  await repo.storeOAuthCode("fresh-payload");
+  assert.equal((await db.query("select count(*)::int as n from consumer_oauth_codes")).rows[0].n,1);
+  const member = {id:1,siteId:7,email:"a@example.test",name:"Buyer",googleId:"verified-subject"};
+  await assert.rejects(repo.issueMemberGrant({...member,googleId:"wrong-subject"}));
+  const grant = await repo.issueMemberGrant(member);
+  const digest = (token:string) => createHash("sha256").update(token).digest("hex");
+  const stored = (await db.query("select * from consumer_member_grants")).rows[0];
+  assert.equal(stored.token_hash,digest(grant));
+  const access = await repo.issueMemberCredential(grant,7,1);
+  assert.match(access!,/^cmc_[a-f0-9]{64}$/);
+  assert.equal(await repo.issueMemberCredential(grant,7,1),access);
+  assert.equal((await db.query("select count(*)::int as n from consumer_member_credentials")).rows[0].n,1);
+  assert.equal(await repo.issueMemberCredential(grant,7,2),null);
+  assert.equal(await repo.issueMemberCredential(grant,8,1),null);
+  assert.equal(await repo.issueMemberCredential("shared-secret",7,1),null);
+  const expires = (await db.query("select expires_at from consumer_member_grants")).rows[0].expires_at;
+  await db.exec("update consumer_member_credentials set expires_at=now()-interval '1 second'");
+  const originalNow = Date.now;
+  Date.now = () => originalNow() + 15*60*1000;
+  let rotated: string|null;
+  try { rotated = await repo.issueMemberCredential(grant,7,1); } finally { Date.now=originalNow; }
+  assert.notEqual(rotated,access);
+  assert.equal((await db.query("select count(*)::int as n from consumer_member_credentials")).rows[0].n,1);
+  assert.deepEqual((await db.query("select expires_at from consumer_member_grants")).rows[0].expires_at,expires);
+  await db.exec("update consumer_member_grants set revoked_at=now()");
+  assert.equal(await repo.issueMemberCredential(grant,7,1),null);
+  await db.exec("update consumer_member_grants set revoked_at=null,expires_at=now()-interval '1 second'");
+  assert.equal(await repo.issueMemberCredential(grant,7,1),null);
+  await db.exec("update consumer_member_grants set expires_at=now()+interval '1 minute'");
+  const nearEnd = await repo.issueMemberCredential(grant,7,1);
+  assert.ok(nearEnd);
+  assert.equal((await db.query("select count(*)::int as n from consumer_member_credentials c join consumer_member_grants g on g.id=c.grant_id where c.token_hash=$1 and c.expires_at<=g.expires_at",[digest(nearEnd!)])).rows[0].n,1);
+  const otherGrant=await repo.issueMemberGrant(member);
+  await repo.revokeMemberGrant(grant,7,2);
+  assert.ok(await repo.issueMemberCredential(grant,7,1));
+  await repo.revokeMemberGrant(grant,7,1);
+  assert.equal(await repo.issueMemberCredential(grant,7,1),null);
+  assert.ok(await repo.issueMemberCredential(otherGrant,7,1));
+  await db.exec("update members set status='inactive' where id=1");
+  assert.equal(await repo.issueMemberCredential(grant,7,1),null);
+  await db.exec("delete from members where id=1");
+  assert.equal((await db.query("select count(*)::int as n from consumer_member_grants")).rows[0].n,0);
+  assert.equal((await db.query("select count(*)::int as n from consumer_member_credentials")).rows[0].n,0);
+ } finally { await db.close(); }
+});

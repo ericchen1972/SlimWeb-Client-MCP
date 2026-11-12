@@ -228,3 +228,25 @@ Run HTTP locally:
 npm run build
 WEBLESS_BASE_URL="https://your-webless-host.example" MCP_SESSION_SECRET="dev-secret" node dist/src/index.js
 ```
+
+## Consumer member authorization (2026-11-13)
+
+The Cloud Run service is `slimweb-client-mcp`. `WEBLESS_MCP_SECRET` is no longer consumed or forwarded. Google token verification checks audience, issuer, expiry and verified email before provisioning and issuing a random member/site grant. The shared Webless database must first apply migration `2026_11_13_120000_create_consumer_member_credentials_table` (four additive tables).
+
+Signed sessions retain the existing7day lifetime, carrying a revocable opaque grant. Existing preupgrade sessions must reconnect once. Each authenticated tool call resolves that grant with the same site/member and current active status, then derives/reuses a maximum30minute backend credential (15minute bucket). The access expires no later than the original grant; renewal never extends the family. Storefront APIs recheck the family on every use. No caller-selected member ID or service-secret fallback is sent. Credentials remain absent from tool/resource results and URLs.
+
+Operational revocation: set `consumer_member_grants.revoked_at` for the intended site/member or grant ID using authorized database administration. This immediately invalidates all derived accesses and blocks further renewal. `consumer_member_credentials.revoked_at` can revoke an individual access. Deleting members/sites cascades both tables; expired families may be deleted after their expiry, cascading dormant accesses. Access issuance removes expired accesses for its own family and reuses current-bucket rows. Never print plaintext grants or signed sessions in logs.
+
+This consumer repository connects directly to SaaS PostgreSQL. It has no standalone login adapter; Standalone now enforces the same boundary but does not accept SaaS identities. Native storefront Google/LINE login, LINE commerce and native checkout confirmation are unchanged.
+
+Verification: `npm ci && npm test` runs unit/HTTP suites and actual isolated PostgreSQL dialect/expiry/rotation tests using pinned development-only `@electric-sql/pglite` 0.5.16. The PostgreSQL test uses an in-memory database only; it never connects to configured production PostgreSQL. PHP consumers run `ConsumerCredentialTest` and `ConsumerPromotionParityTest` with explicit SQLite `:memory:` settings.
+
+OAuth authorization codes are opaque random one-use values, never signed readable identity/grant payloads. `consumer_oauth_codes` stores only the code hash plus purpose-separated AES-256-GCM encrypted payload under the existing session secret, expiring in10minutes. Atomic consume prevents replay across workers; token exchange still verifies client, redirect and PKCE. Only explicitly typed/versioned `consumer_session` tokens authenticate the MCP endpoint. In-memory PostgreSQL tests cover parallel code consumption and expiry; HTTP tests reject code-as-bearer, replay and incorrect PKCE.
+
+### Registered clients, explicit consent and disconnect
+
+Dynamic registration persists client name and exact redirects for90days in `consumer_oauth_clients`. Redirects must use HTTPS or HTTP on literal loopback (`127.0.0.1`, `[::1]`, `localhost`), without userinfo/fragments. S256 is mandatory. Authorization validates registration and exact local resource before login. Both existing sessions and fresh Google login display an explicit browser consent page naming escaped client, shop, member and redirect; GET never issues an authorization code. Traditional Chinese is shown for a `zh` browser language, English otherwise. Responses disallow framing and caching.
+
+Approval POST requires exact service Origin, same typed browser-cookie session, random CSRF token, exact authorization parameters and a5minute one-use encrypted `oauth_consent` artifact. Denial/missing approval creates no code. Consent and authorization codes have distinct payload types and cannot substitute for each other. Client registration and grant are rechecked before code exchange. OAuth bodies are bounded to64KiB. Browser Google login rejects foreign origins and cross-site fetches; direct native Google clients remain supported.
+
+The advertised standard `POST /oauth/revoke` endpoint accepts form/JSON `token` containing the signed consumer access/session token. It never uses ambient cookies or a caller member selector. It revokes only that token's site/member grant; all derived backend accesses become invalid and renewal stops immediately. Invalid tokens return200 per revocation semantics. Other families remain valid. This is the supported client-disconnect path; administrative SQL revocation remains available for incident response.

@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHmac, timingSafeEqual, createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 
 const COOKIE_NAME = "swcmcp_session";
 const DEFAULT_TTL_SECONDS = 60 * 60 * 24 * 7;
@@ -9,6 +9,7 @@ export interface ClientSessionPayload {
   member_id: number;
   email: string;
   google_id: string;
+  member_grant: string;
   exp: number;
   iat?: number;
 }
@@ -17,14 +18,17 @@ export function createSessionToken(
   payload: Omit<ClientSessionPayload, "exp" | "iat">,
   secret: string,
   now = Date.now(),
+  absoluteExpiry?: number,
 ): string {
   const issuedAt = Math.floor(now / 1000);
 
   return createSignedToken(
     {
       ...payload,
+      typ: "consumer_session",
+      version: 1,
       iat: issuedAt,
-      exp: issuedAt + DEFAULT_TTL_SECONDS,
+      exp: Math.min(issuedAt + DEFAULT_TTL_SECONDS, absoluteExpiry ?? Infinity),
     },
     secret,
   );
@@ -55,17 +59,21 @@ export function verifySessionToken(
     typeof payload !== "object" ||
     !("exp" in payload) ||
     typeof payload.exp !== "number" ||
-    payload.exp < Math.floor(now / 1000)
+    payload.exp <= Math.floor(now / 1000)
   ) {
     return null;
   }
 
   if (
+    payload.typ !== "consumer_session" ||
+    payload.version !== 1 ||
     typeof payload.site_id !== "number" ||
     typeof payload.callback_code !== "string" ||
     typeof payload.member_id !== "number" ||
     typeof payload.email !== "string" ||
-    typeof payload.google_id !== "string"
+    typeof payload.google_id !== "string" ||
+    typeof payload.member_grant !== "string" ||
+    !/^cmg_[a-f0-9]{64}$/.test(payload.member_grant)
   ) {
     return null;
   }
@@ -139,4 +147,23 @@ function safeEqual(left: string, right: string): boolean {
 interface HeadersLike {
   authorization?: string;
   cookie?: string;
+}
+
+// Purpose-separated authenticated encryption keeps grants out of code URLs and database plaintext.
+export function sealOAuthPayload(payload: object, secret: string): string {
+ if (!secret) throw new Error("MCP_SESSION_SECRET is required");
+ const iv=randomBytes(12);
+ const cipher=createCipheriv("aes-256-gcm", createHmac("sha256",secret).update("consumer-oauth-code-v1").digest(),iv);
+ const data=Buffer.concat([cipher.update(JSON.stringify(payload),"utf8"),cipher.final()]);
+ return [iv,cipher.getAuthTag(),data].map(x=>x.toString("base64url")).join(".");
+}
+export function openOAuthPayload(value: string, secret: string): Record<string, unknown>|null {
+ try {
+  if (!secret) return null;
+  const parts=value.split("."); if(parts.length!==3)return null;
+  const [iv,tag,data]=parts.map(x=>Buffer.from(x,"base64url"));
+  const cipher=createDecipheriv("aes-256-gcm",createHmac("sha256",secret).update("consumer-oauth-code-v1").digest(),iv);
+  cipher.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([cipher.update(data),cipher.final()]).toString("utf8"));
+ } catch { return null; }
 }

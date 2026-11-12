@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import test from "node:test";
 
 import { createRequestHandler } from "../src/app.js";
-import { createSignedToken, verifySignedToken } from "../src/session.js";
+import { createSignedToken, verifySignedToken, openOAuthPayload, sealOAuthPayload } from "../src/session.js";
 import type {
   GoogleProfile,
   SiteMemberRepository,
@@ -438,9 +438,11 @@ test("site MCP tools/call accepts a bearer session for the same callback code", 
   await withApp(fakeRepository(), async (baseUrl, sessionSecret) => {
     const token = createSignedToken(
       {
+        typ: "consumer_session", version: 1,
         site_id: site.id,
         callback_code: site.callbackCode,
         member_id: member.id,
+        member_grant: "cmg_" + "a".repeat(64),
         email: member.email,
         google_id: member.googleId,
         exp: Math.floor(Date.now() / 1000) + 60,
@@ -473,7 +475,7 @@ test("site MCP tools/call accepts a bearer session for the same callback code", 
   });
 });
 
-test("site MCP order preview passes the authenticated member id and payload to Webless", async () => {
+test("site MCP order preview passes the authenticated member credential and payload to Webless", async () => {
   const weblessRequests: string[] = [];
   const weblessBodies: unknown[] = [];
 
@@ -482,9 +484,11 @@ test("site MCP order preview passes the authenticated member id and payload to W
     async (baseUrl, sessionSecret) => {
       const token = createSignedToken(
         {
-          site_id: site.id,
+          typ: "consumer_session", version: 1,
+        site_id: site.id,
           callback_code: site.callbackCode,
           member_id: member.id,
+        member_grant: "cmg_" + "a".repeat(64),
           email: member.email,
           google_id: member.googleId,
           exp: Math.floor(Date.now() / 1000) + 60,
@@ -520,6 +524,7 @@ test("site MCP order preview passes the authenticated member id and payload to W
     },
     async (input) => {
       const request = input as Request;
+      assert.equal(request.headers.get("authorization"), "Bearer cmc_" + "b".repeat(64));
       weblessRequests.push(request.url);
       weblessBodies.push(JSON.parse(await request.text()));
       return Response.json({ preview: { status: "ready", items: [] } });
@@ -528,7 +533,7 @@ test("site MCP order preview passes the authenticated member id and payload to W
 
   assert.equal(
     weblessRequests[0],
-    `https://webless.example.test/api/storefront/order-preview?site=${site.callbackCode}&member_id=${member.id}`,
+    `https://webless.example.test/api/storefront/order-preview?site=${site.callbackCode}`,
   );
   assert.deepEqual(weblessBodies[0], {
     items: [{ product_id: 123, quantity: 2 }],
@@ -546,9 +551,11 @@ test("site MCP order preview returns structured Webless errors without HTTP 500"
     async (baseUrl, sessionSecret) => {
       const token = createSignedToken(
         {
-          site_id: site.id,
+          typ: "consumer_session", version: 1,
+        site_id: site.id,
           callback_code: site.callbackCode,
           member_id: member.id,
+        member_grant: "cmg_" + "a".repeat(64),
           email: member.email,
           google_id: member.googleId,
           exp: Math.floor(Date.now() / 1000) + 60,
@@ -628,12 +635,13 @@ test("OAuth authorization code flow follows the admin MCP session broker pattern
   });
 
   await withApp(repository, async (baseUrl, sessionSecret) => {
-    const codeVerifier = "abcdefghijklmnopqrstuvwxyz0123456789";
+    const codeVerifier = "abcdefghijklmnopqrstuvwxyz0123456789abcdefghijk";
     const codeChallenge = createHash("sha256")
       .update(codeVerifier)
       .digest("base64url");
+    const registered=await fetch(`${baseUrl}/oauth/register`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({client_name:"Test client",redirect_uris:[`${baseUrl}/oauth/callback`]})});
     const authorizeParams = {
-      client_id: "chatgpt",
+      client_id: (await registered.json()).client_id,
       redirect_uri: `${baseUrl}/oauth/callback`,
       response_type: "code",
       state: "state-1",
@@ -672,9 +680,12 @@ test("OAuth authorization code flow follows the admin MCP session broker pattern
       headers: { cookie: sessionCookie },
       redirect: "manual",
     });
-    const redirectLocation = authorizeResponse.headers.get("location");
-
-    assert.equal(authorizeResponse.status, 302);
+    assert.equal(authorizeResponse.status,200);
+    assert.equal(authorizeResponse.headers.get("location"),null);
+    const consentFields=await consentForm(authorizeResponse);
+    const approved=await fetch(`${baseUrl}/oauth/consent`,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded",cookie:sessionCookie,origin:baseUrl},body:new URLSearchParams({...consentFields,decision:"approve"}),redirect:"manual"});
+    const redirectLocation = approved.headers.get("location");
+    assert.equal(approved.status,302);
     assert(redirectLocation);
 
     const redirected = new URL(redirectLocation);
@@ -683,10 +694,15 @@ test("OAuth authorization code flow follows the admin MCP session broker pattern
     assert(code);
 
     const codePayload = verifySignedToken(code, sessionSecret);
-    assert.equal(codePayload?.typ, "oauth_code");
-    assert.equal(codePayload?.email, member.email);
-    assert.equal(codePayload?.member_id, member.id);
+    assert.equal(codePayload, null);
+    assert.match(code, /^coc_[a-f0-9]{64}$/);
     assert.equal("access_token" in (codePayload ?? {}), false);
+
+    const codeAsBearer = await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`, {
+      method:"POST", headers:{"content-type":"application/json",authorization:`Bearer ${code}`},
+      body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"client_customer_context",arguments:{}}}),
+    });
+    assert.equal((await codeAsBearer.json()).error.code,-32001);
 
     const tokenResponse = await fetch(`${baseUrl}/oauth/token`, {
       method: "POST",
@@ -704,6 +720,23 @@ test("OAuth authorization code flow follows the admin MCP session broker pattern
     assert.equal(tokenResponse.status, 200);
     assert.equal(tokenBody.token_type, "Bearer");
     assert.equal(typeof tokenBody.access_token, "string");
+    const replay = await fetch(`${baseUrl}/oauth/token`, {
+      method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},
+      body:new URLSearchParams({grant_type:"authorization_code",code,redirect_uri:authorizeParams.redirect_uri,client_id:authorizeParams.client_id,code_verifier:codeVerifier}),
+    });
+    assert.equal(replay.status,400);
+    assert.equal((await replay.json()).error,"invalid_grant");
+    const newAuth=await fetch(authorizeUrl,{headers:{cookie:sessionCookie},redirect:"manual"});
+    const nextFields=await consentForm(newAuth);
+    const approvedAgain=await fetch(`${baseUrl}/oauth/consent`,{method:"POST",headers:{"content-type":"application/x-www-form-urlencoded",cookie:sessionCookie,origin:baseUrl},body:new URLSearchParams({...nextFields,decision:"approve"}),redirect:"manual"});
+    const badCode=new URL(approvedAgain.headers.get("location")!).searchParams.get("code")!;
+    const badPkce=await fetch(`${baseUrl}/oauth/token`,{
+      method:"POST",headers:{"content-type":"application/x-www-form-urlencoded"},
+      body:new URLSearchParams({grant_type:"authorization_code",code:badCode,redirect_uri:authorizeParams.redirect_uri,client_id:authorizeParams.client_id,code_verifier:"wrong-verifier"}),
+    });
+    assert.equal(badPkce.status,400);
+    assert.equal((await badPkce.json()).error,"invalid_grant");
+
     assert.deepEqual(provisions, [
       {
         siteId: site.id,
@@ -749,7 +782,6 @@ async function withApp(
     config: {
       baseUrl: "https://webless.example.test",
       sessionSecret,
-      mcpSecret: "test-mcp-secret",
     },
     googleVerifier: {
       verify: async () => ({
@@ -781,10 +813,20 @@ async function withApp(
 function fakeRepository(
   overrides: Partial<SiteMemberRepository> = {},
 ): SiteMemberRepository {
+  const codes=new Map<string,string>();
+  const clients=new Map<string,{name:string;redirectUris:string[]}>();
+  const revoked=new Set<string>();
   return {
+    revokeMemberGrant: async grant=>{revoked.add(grant);},
+    registerOAuthClient:async(name,redirectUris)=>{const id="client-"+clients.size;clients.set(id,{name,redirectUris});return id;},
+    findOAuthClient:async id=>clients.get(id)??null,
+    storeOAuthCode: async payload => {const code="coc_"+createHash("sha256").update(String(Math.random())).digest("hex");codes.set(code,payload);return code;},
+    consumeOAuthCode: async code => {const value=codes.get(code)??null;codes.delete(code);return value;},
     findSiteByCallbackCode: async (callbackCode) =>
       callbackCode === site.callbackCode ? site : null,
     provisionMember: async () => member,
+    issueMemberGrant: async () => "cmg_" + "a".repeat(64),
+    issueMemberCredential: async grant => revoked.has(grant)?null:"cmc_" + "b".repeat(64),
     ...overrides,
   };
 }
@@ -810,4 +852,140 @@ test("HTTP tool schemas expose bounded quote identifiers and offline draft hando
       if (name === "client_checkout_start") assert.ok(tool.description.includes("does not create an order"));
     }
   });
+});
+
+
+test("revoked member family prevents backend calls and does not leak grant", async () => {
+ let calls=0;
+ await withApp(fakeRepository({issueMemberCredential:async()=>null}),async(baseUrl,secret)=>{
+  const grant="cmg_"+"a".repeat(64);
+  const token=createSignedToken({typ:"consumer_session",version:1,site_id:site.id,callback_code:site.callbackCode,member_id:member.id,email:member.email,google_id:member.googleId,member_grant:grant,exp:Math.floor(Date.now()/1000)+60},secret);
+  const response=await fetch(`${baseUrl}/sites/${site.callbackCode}/mcp`,{method:"POST",headers:{"content-type":"application/json",authorization:`Bearer ${token}`},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"client_customer_context",arguments:{}}})});
+  const text=await response.text();
+  assert.equal(JSON.parse(text).error.data.webless_status,401);
+  assert.ok(!text.includes(grant));
+ },async()=>{calls++;return Response.json({});});
+ assert.equal(calls,0);
+});
+
+
+test("OAuth authorization rejects unknown clients before login", async()=>{
+ await withApp(fakeRepository(),async(baseUrl)=>{
+  const p=new URLSearchParams({client_id:"unknown",redirect_uri:"https://attacker.example/callback",response_type:"code",resource:`${baseUrl}/sites/${site.callbackCode}/mcp`,code_challenge:"a".repeat(43),code_challenge_method:"S256"});
+  const response=await fetch(`${baseUrl}/oauth/authorize?${p}`,{redirect:"manual"});
+  assert.equal(response.status,400);
+  assert.equal(response.headers.get("location"),null);
+ });
+});
+
+async function consentForm(response:Response):Promise<{consent:string;csrf:string}>{
+ const html=await response.text();
+ const consent=html.match(/name="consent" value="([^"]+)"/)?.[1];
+ const csrf=html.match(/name="csrf" value="([^"]+)"/)?.[1];
+ assert.ok(consent);assert.ok(csrf);
+ return {consent,csrf};
+}
+
+
+async function oauthFixture(baseUrl:string,secret:string){
+ const response=await fetch(`${baseUrl}/oauth/register`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({client_name:"<img src=x onerror=alert(1)>",redirect_uris:[`${baseUrl}/callback`]})});
+ assert.equal(response.status,201);
+ const client=await response.json();
+ const verifier="v".repeat(64);
+ const params={client_id:client.client_id,redirect_uri:`${baseUrl}/callback`,response_type:"code",resource:`${baseUrl}/sites/${site.callbackCode}/mcp`,code_challenge:createHash("sha256").update(verifier).digest("base64url"),code_challenge_method:"S256",state:"state"};
+ const token=createSignedToken({typ:"consumer_session",version:1,site_id:site.id,callback_code:site.callbackCode,member_id:member.id,email:member.email,google_id:member.googleId,member_grant:"cmg_"+"a".repeat(64),exp:Math.floor(Date.now()/1000)+3600},secret);
+ const cookie=`swcmcp_session=${token}`;
+ const getConsent=()=>fetch(`${baseUrl}/oauth/authorize?${new URLSearchParams(params)}`,{headers:{cookie,"accept-language":"zh-TW"},redirect:"manual"});
+ const postConsent=(fields:Record<string,string>,overrides:Record<string,string>={})=>fetch(`${baseUrl}/oauth/consent`,{method:"POST",headers:{cookie,origin:baseUrl,"content-type":"application/x-www-form-urlencoded",...overrides},body:new URLSearchParams(fields),redirect:"manual"});
+ return {params,verifier,token,cookie,getConsent,postConsent};
+}
+
+test("OAuth registration and authorization enforce exact redirects and S256",async()=>{
+ await withApp(fakeRepository(),async(base,secret)=>{
+  for(const uri of ["http://attacker.example/cb","https://example.test/cb#fragment","https://user:pass@example.test/cb","javascript:alert(1)"]){
+   const r=await fetch(`${base}/oauth/register`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({redirect_uris:[uri]})});assert.equal(r.status,400);
+  }
+  const f=await oauthFixture(base,secret);
+  for(const extra of [{redirect_uri:`${base}/different`},{code_challenge_method:"plain"},{code_challenge_method:""},{resource:`https://attacker.example/sites/${site.callbackCode}/mcp`}]){
+   const r=await fetch(`${base}/oauth/authorize?${new URLSearchParams({...f.params,...extra})}`,{headers:{cookie:f.cookie},redirect:"manual"});assert.equal(r.status,400);assert.equal(r.headers.get("location"),null);
+  }
+ });
+});
+
+test("OAuth consent needs explicit same-session same-origin one-use approval",async()=>{
+ await withApp(fakeRepository(),async(base,secret)=>{
+  const f=await oauthFixture(base,secret);
+  const page=await f.getConsent();assert.equal(page.status,200);assert.equal(page.headers.get("location"),null);assert.equal(page.headers.get("x-frame-options"),"DENY");
+  const html=await page.text();assert.ok(html.includes("允許應用程式存取"));assert.ok(html.includes("&lt;img"));assert.ok(!html.includes("<img"));assert.ok(!html.includes("cmg_"));
+  let fields=await consentForm(await f.getConsent());
+  assert.equal((await f.postConsent({...fields,decision:"approve"},{origin:"https://attacker.example"})).status,403);
+  assert.equal((await f.postConsent({...fields,decision:"approve"},{origin:""})).status,403);
+  assert.equal((await f.postConsent({...fields,decision:"approve"},{cookie:`swcmcp_session=${createSignedToken({...verifySignedToken(f.token,secret)!,member_grant:"cmg_"+"c".repeat(64)},secret)}`})).status,403);
+  assert.equal((await f.postConsent({...fields,decision:"approve"})).status,403);
+  fields=await consentForm(await f.getConsent());
+  assert.equal((await f.postConsent({...fields,csrf:"wrong",decision:"approve"})).status,403);
+  fields=await consentForm(await f.getConsent());
+  const denied=await f.postConsent({...fields,decision:"deny"});assert.equal(denied.status,200);assert.equal(denied.headers.get("location"),null);
+  assert.equal((await f.postConsent({...fields,decision:"approve"})).status,403);
+  fields=await consentForm(await f.getConsent());
+  const missingDecision=await f.postConsent(fields);assert.equal(missingDecision.headers.get("location"),null);
+  fields=await consentForm(await f.getConsent());
+  const approved=await f.postConsent({...fields,decision:"approve"});assert.equal(approved.status,302);
+  assert.equal((await f.postConsent({...fields,decision:"approve"})).status,403);
+  const code=new URL(approved.headers.get("location")!).searchParams.get("code")!;
+  assert.equal((await f.postConsent({consent:code,csrf:fields.csrf,decision:"approve"})).status,403);
+  fields=await consentForm(await f.getConsent());
+  const asToken=await fetch(`${base}/oauth/token`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({grant_type:"authorization_code",code:fields.consent,client_id:f.params.client_id,redirect_uri:f.params.redirect_uri,code_verifier:f.verifier})});assert.equal(asToken.status,400);
+ });
+});
+
+test("OAuth registration expiry is rechecked at approval and token exchange",async()=>{
+ const repo=fakeRepository();const find=repo.findOAuthClient;
+ await withApp(repo,async(base,secret)=>{
+  const f=await oauthFixture(base,secret);let fields=await consentForm(await f.getConsent());
+  repo.findOAuthClient=async()=>null;
+  assert.equal((await f.postConsent({...fields,decision:"approve"})).status,400);
+  repo.findOAuthClient=find;
+  fields=await consentForm(await f.getConsent());const approved=await f.postConsent({...fields,decision:"approve"});
+  const code=new URL(approved.headers.get("location")!).searchParams.get("code");repo.findOAuthClient=async()=>null;
+  const r=await fetch(`${base}/oauth/token`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({grant_type:"authorization_code",code,client_id:f.params.client_id,redirect_uri:f.params.redirect_uri,code_verifier:f.verifier})});assert.equal(r.status,400);
+ });
+});
+
+test("OAuth revocation uses explicit supplied token and stops only that family",async()=>{
+ const repo=fakeRepository();let calls=0;
+ await withApp(repo,async(base,secret)=>{
+  const f=await oauthFixture(base,secret);
+  const call=(token:string)=>fetch(`${base}/sites/${site.callbackCode}/mcp`,{method:"POST",headers:{authorization:`Bearer ${token}`,"content-type":"application/json"},body:JSON.stringify({jsonrpc:"2.0",id:1,method:"tools/call",params:{name:"client_customer_context",arguments:{}}})});
+  await call(f.token);assert.equal(calls,1);
+  const revoke=(token:string)=>fetch(`${base}/oauth/revoke`,{method:"POST",headers:{cookie:f.cookie,"content-type":"application/json"},body:JSON.stringify({token})});
+  assert.equal((await revoke("invalid")).status,200);await call(f.token);assert.equal(calls,2);
+  assert.equal((await revoke(f.token)).status,200);
+  const denied=await call(f.token);assert.equal((await denied.json()).error.data.webless_status,401);assert.equal(calls,2);
+  const payload=verifySignedToken(f.token,secret)!;const other=createSignedToken({...payload,member_grant:"cmg_"+"c".repeat(64)},secret);
+  await call(other);assert.equal(calls,3);
+ },async()=>{calls++;return Response.json({});});
+});
+
+test("Google broker rejects cross-origin cookie swapping and large OAuth input",async()=>{
+ await withApp(fakeRepository(),async(base)=>{
+  for(const path of ["/auth/google","/oauth/google",`/sites/${site.callbackCode}/auth/google`]){const r=await fetch(base+path,{method:"POST",headers:{origin:"https://attacker.example","content-type":"application/json"},body:"{}"});assert.equal(r.status,403);}
+  const r=await fetch(`${base}/oauth/register`,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({client_name:"x".repeat(70000)})});assert.equal(r.status,413);
+ });
+});
+
+
+test("fresh Google OAuth alias still requires explicit consent and expired consent fails",async()=>{
+ const repo=fakeRepository();
+ await withApp(repo,async(base,secret)=>{
+  const f=await oauthFixture(base,secret);
+  const next=`/oauth/authorize?${new URLSearchParams(f.params)}`;
+  const login=await fetch(`${base}/oauth/google`,{method:"POST",headers:{origin:base,"content-type":"application/json"},body:JSON.stringify({credential:"google-id-token",next}),redirect:"manual"});
+  assert.equal(login.status,200);assert.equal(login.headers.get("location"),null);assert.equal((await login.json()).next,next);
+  const consent=await fetch(base+next,{headers:{cookie:login.headers.get("set-cookie")!},redirect:"manual"});assert.equal(consent.status,200);assert.equal(consent.headers.get("location"),null);
+  const store=repo.storeOAuthCode;
+  repo.storeOAuthCode=async(value,ttl)=>{const payload=openOAuthPayload(value,secret)!;return store(sealOAuthPayload({...payload,exp:Math.floor(Date.now()/1000)-1},secret),ttl);};
+  const fields=await consentForm(await f.getConsent());
+  assert.equal((await f.postConsent({...fields,decision:"approve"})).status,403);
+ });
 });

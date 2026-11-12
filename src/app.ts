@@ -9,12 +9,12 @@ import {
 } from "./google-verifier.js";
 import {
   createSessionToken,
-  createSignedToken,
+  sealOAuthPayload,
+  openOAuthPayload,
   readSessionToken,
   sessionCookie,
   type ClientSessionPayload,
   verifySessionToken,
-  verifySignedToken,
 } from "./session.js";
 import {
   PostgresSiteMemberRepository,
@@ -48,6 +48,7 @@ export function createRequestHandler(options: RequestHandlerOptions) {
       fetchImpl: options.fetchImpl,
     });
   const repository = options.repository ?? new PostgresSiteMemberRepository();
+  options = { ...options, repository };
 
   return async function requestHandler(
     request: IncomingMessage,
@@ -76,7 +77,7 @@ export function createRequestHandler(options: RequestHandlerOptions) {
       }
 
       if (url.pathname === "/oauth/register") {
-        await handleOAuthRegister(request, response);
+        await handleOAuthRegister(request, response, repository);
         return;
       }
 
@@ -114,8 +115,21 @@ export function createRequestHandler(options: RequestHandlerOptions) {
         return;
       }
 
+      if (url.pathname === "/oauth/revoke") {
+        if(request.method!=="POST"){methodNotAllowed(response);return;}
+        const body=await readAnyRequest(request);
+        const session=verifySessionToken(stringValue(body.token)??"",sessionSecret);
+        if(session)await repository.revokeMemberGrant(session.member_grant,session.site_id,session.member_id);
+        jsonResponse(response,200,{}, {"cache-control":"no-store"});return;
+      }
+
+      if (url.pathname === "/oauth/consent") {
+        await handleOAuthConsent(request,response,options,sessionSecret);
+        return;
+      }
+
       if (url.pathname === "/oauth/token") {
-        await handleOAuthToken(request, response, sessionSecret);
+        await handleOAuthToken(request, response, sessionSecret, repository);
         return;
       }
 
@@ -137,7 +151,7 @@ export function createRequestHandler(options: RequestHandlerOptions) {
       }
 
       if (siteRoute.action === "auth/google") {
-        await handleGoogleLogin(request, response, site, verifier, repository, sessionSecret);
+        await handleGoogleLogin(request, response, site, verifier, repository, sessionSecret, options);
         return;
       }
 
@@ -148,7 +162,7 @@ export function createRequestHandler(options: RequestHandlerOptions) {
 
       jsonResponse(response, 404, { ok: false, error: "Not found" });
     } catch (error) {
-      jsonResponse(response, 500, {
+      jsonResponse(response, (error as {status?:number}).status === 413 ? 413 : 500, {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -312,11 +326,12 @@ function handleOAuthMetadata(
     authorization_endpoint: `${issuer}/oauth/authorize`,
     token_endpoint: `${issuer}/oauth/token`,
     registration_endpoint: `${issuer}/oauth/register`,
+    revocation_endpoint: `${issuer}/oauth/revoke`,
     jwks_uri: `${issuer}/oauth/jwks`,
     response_types_supported: ["code"],
     grant_types_supported: ["authorization_code"],
     token_endpoint_auth_methods_supported: ["none"],
-    code_challenge_methods_supported: ["S256", "plain"],
+    code_challenge_methods_supported: ["S256"],
     scopes_supported: ["mcp"],
     resource,
     authorization_servers: [issuer],
@@ -326,6 +341,7 @@ function handleOAuthMetadata(
 async function handleOAuthRegister(
   request: IncomingMessage,
   response: ServerResponse,
+  repository: SiteMemberRepository,
 ): Promise<void> {
   if (request.method !== "POST") {
     methodNotAllowed(response);
@@ -334,10 +350,14 @@ async function handleOAuthRegister(
 
   const body = await readAnyRequest(request);
   const redirectUris = arrayOfStrings(body.redirect_uris) ?? [];
-
+  const name = (stringValue(body.client_name) ?? "MCP client").trim();
+  if (!name || name.length>200 || redirectUris.length<1 || redirectUris.length>10 || !redirectUris.every(allowedOAuthRedirect)) {
+    jsonResponse(response,400,{error:"invalid_client_metadata"}); return;
+  }
+  const clientId=await repository.registerOAuthClient(name,redirectUris);
   jsonResponse(response, 201, {
-    client_id: `slimweb-client-mcp-${randomBytes(8).toString("hex")}`,
-    client_name: stringValue(body.client_name) ?? "ChatGPT",
+    client_id: clientId,
+    client_name: name,
     redirect_uris: redirectUris,
     grant_types: ["authorization_code"],
     response_types: ["code"],
@@ -345,53 +365,60 @@ async function handleOAuthRegister(
   });
 }
 
-async function handleOAuthAuthorize(
-  request: IncomingMessage,
-  response: ServerResponse,
-  options: RequestHandlerOptions,
-  sessionSecret: string,
-): Promise<void> {
-  if (request.method !== "GET") {
-    methodNotAllowed(response);
-    return;
+async function handleOAuthAuthorize(request: IncomingMessage, response: ServerResponse, options: RequestHandlerOptions, sessionSecret: string): Promise<void> {
+  if(request.method!=="GET"){methodNotAllowed(response);return;}
+  const url=new URL(request.url??"/",publicBaseUrl(request,options));
+  const params=oauthParamsFromSearch(url.searchParams);
+  const client=await authorizedOAuthClient(params,options.repository!);
+  const siteCode=siteCodeFromResource(params.resource);
+  if(!client || !siteCode || params.resource!==`${publicBaseUrl(request,options)}/sites/${siteCode}/mcp`){htmlResponse(response,400,(request.headers["accept-language"]??"").toLowerCase().startsWith("zh")?"<p>授權要求無效。</p>":"<p>Invalid authorization request.</p>");return;}
+  const raw=readSessionToken({cookie:request.headers.cookie});
+  const session=verifySessionToken(raw,sessionSecret);
+  if(!session || session.callback_code!==siteCode){
+    redirectResponse(response,`/auth/login?next=${encodeURIComponent(sameOriginNextPath(`${url.pathname}${url.search}`))}`);return;
   }
+  const site=await options.repository!.findSiteByCallbackCode(siteCode);
+  if(!site || site.id!==session.site_id){htmlResponse(response,400,(request.headers["accept-language"]??"").toLowerCase().startsWith("zh")?"<p>網站無效。</p>":"<p>Invalid site.</p>");return;}
+  const csrf=randomBytes(32).toString("hex");
+  const consent=await options.repository!.storeOAuthCode(sealOAuthPayload({typ:"oauth_consent",params,session_hash:sha256(raw),csrf_hash:sha256(csrf),exp:Math.min(session.exp,Math.floor(Date.now()/1000)+300)},sessionSecret),300);
+  const zh=(request.headers["accept-language"]??"").toLowerCase().startsWith("zh");
+  const title=zh?"允許應用程式存取？":"Allow this application access?";
+  const detail=zh?"允許讀取您的會員資料與訂單、試算價格及建立結帳草稿。最後結帳仍需由您確認。":"Allow access to your member profile and orders, price quotes and checkout drafts. Final checkout still requires your confirmation.";
+  htmlResponse(response,200,`<main><h1>${title}</h1><p>${escapeHtml(client.name)}</p><p>${escapeHtml(site.name)} · ${escapeHtml(session.email)}</p><p>${detail}</p><p>${zh?"回傳網址":"Redirect URI"}: <code>${escapeHtml(params.redirectUri)}</code></p><form method="post" action="/oauth/consent"><input type="hidden" name="consent" value="${consent}"><input type="hidden" name="csrf" value="${csrf}"><button name="decision" value="approve">✓ ${zh?"允許":"Allow"}</button><button name="decision" value="deny">✕ ${zh?"拒絕":"Deny"}</button></form></main>`);
+}
 
-  const url = new URL(request.url ?? "/", publicBaseUrl(request, options));
-  const params = oauthParamsFromSearch(url.searchParams);
-  const validation = validateOAuthAuthorizeParams(params);
-
-  if (validation) {
-    htmlResponse(response, 400, `<p>${escapeHtml(validation)}</p>`);
-    return;
+async function handleOAuthConsent(request: IncomingMessage,response:ServerResponse,options:RequestHandlerOptions,secret:string):Promise<void>{
+  if(request.method!=="POST"){methodNotAllowed(response);return;}
+  if(request.headers.origin!==new URL(publicBaseUrl(request,options)).origin){jsonResponse(response,403,{error:"invalid_consent"});return;}
+  const body=await readAnyRequest(request);
+  const encrypted=await options.repository!.consumeOAuthCode(stringValue(body.consent)??"");
+  const artifact=encrypted?openOAuthPayload(encrypted,secret):null;
+  const raw=readSessionToken({cookie:request.headers.cookie});
+  const session=verifySessionToken(raw,secret);
+  if(!artifact || artifact.typ!=="oauth_consent" || typeof artifact.exp!=="number" || artifact.exp<=Math.floor(Date.now()/1000) || !session || artifact.session_hash!==sha256(raw) || artifact.csrf_hash!==sha256(stringValue(body.csrf)??"")){
+    jsonResponse(response,403,{error:"invalid_consent"});return;
   }
+  const params=artifact.params as OAuthAuthorizeParams;
+  if(!params || !await authorizedOAuthClient(params,options.repository!) || siteCodeFromResource(params.resource)!==session.callback_code || params.resource!==`${publicBaseUrl(request,options)}/sites/${session.callback_code}/mcp`){jsonResponse(response,400,{error:"invalid_client"});return;}
+  if(body.decision!=="approve"){htmlResponse(response,200,(request.headers["accept-language"]??"").toLowerCase().startsWith("zh")?"<p>已拒絕授權。</p>":"<p>Authorization denied.</p>");return;}
+  // Recheck current family and member before issuing authorization.
+  if(!await options.repository!.issueMemberCredential(session.member_grant,session.site_id,session.member_id)){jsonResponse(response,401,{error:"invalid_session"});return;}
+  const redirect=new URL(params.redirectUri);
+  redirect.searchParams.set("code",await createOAuthCode(session,params,secret,options.repository!));
+  if(params.state)redirect.searchParams.set("state",params.state);
+  redirectResponse(response,redirect.toString());
+}
 
-  const siteCode = siteCodeFromResource(params.resource);
+function sha256(value:string):string{return createHash("sha256").update(value).digest("hex");}
 
-  if (!siteCode) {
-    htmlResponse(response, 400, "<p>Missing SlimWeb site MCP resource.</p>");
-    return;
-  }
+async function authorizedOAuthClient(params:OAuthAuthorizeParams,repository:SiteMemberRepository){
+  if(validateOAuthAuthorizeParams(params))return null;
+  const client=await repository.findOAuthClient(params.clientId);
+  return client?.redirectUris.includes(params.redirectUri)?client:null;
+}
 
-  const session = verifySessionToken(readSessionToken({
-    authorization: request.headers.authorization,
-    cookie: request.headers.cookie,
-  }), sessionSecret);
-
-  if (!session || session.callback_code !== siteCode) {
-    const next = sameOriginNextPath(`${url.pathname}${url.search}`);
-
-    redirectResponse(response, `/auth/login?next=${encodeURIComponent(next)}`);
-    return;
-  }
-
-  const redirectUrl = new URL(params.redirectUri);
-  redirectUrl.searchParams.set("code", createOAuthCode(session, params, sessionSecret));
-
-  if (params.state) {
-    redirectUrl.searchParams.set("state", params.state);
-  }
-
-  redirectResponse(response, redirectUrl.toString());
+function allowedOAuthRedirect(value:string):boolean{
+  try{const url=new URL(value);return !url.username&&!url.password&&!url.hash&&(url.protocol==="https:"||(url.protocol==="http:"&&["127.0.0.1","[::1]","localhost"].includes(url.hostname)));}catch{return false;}
 }
 
 function handleAuthLogin(
@@ -423,11 +450,14 @@ async function handleAuthGoogle(
     return;
   }
 
+  if((request.headers.origin && request.headers.origin!==new URL(publicBaseUrl(request,options)).origin) || request.headers["sec-fetch-site"]==="cross-site"){
+    jsonResponse(response,403,{error:"invalid_origin"});return;
+  }
   const body = await readAnyRequest(request);
   const next = sameOriginNextPath(stringValue(body.next));
   const nextUrl = new URL(next, publicBaseUrl(request, options));
   const params = oauthParamsFromSearch(nextUrl.searchParams);
-  const validation = validateOAuthAuthorizeParams(params);
+  const validation = await authorizedOAuthClient(params,repository) ? null : "Invalid registered client or redirect.";
 
   if (validation) {
     jsonResponse(response, 400, { ok: false, error: validation });
@@ -458,6 +488,7 @@ async function handleAuthGoogle(
       member_id: member.id,
       email: member.email,
       google_id: member.googleId,
+      member_grant: await repository.issueMemberGrant(member),
     },
     sessionSecret,
   );
@@ -480,83 +511,11 @@ async function handleAuthGoogle(
   });
 }
 
-async function handleOAuthGoogle(
-  request: IncomingMessage,
-  response: ServerResponse,
-  options: RequestHandlerOptions,
-  verifier: GoogleVerifier,
-  repository: SiteMemberRepository,
-  sessionSecret: string,
-): Promise<void> {
-  if (request.method !== "POST") {
-    methodNotAllowed(response);
-    return;
-  }
-
-  const body = await readAnyRequest(request);
-  const params = oauthParamsFromRecord(body);
-  const validation = validateOAuthAuthorizeParams(params);
-
-  if (validation) {
-    htmlResponse(response, 400, `<p>${escapeHtml(validation)}</p>`);
-    return;
-  }
-
-  const siteCode = siteCodeFromResource(params.resource);
-
-  if (!siteCode) {
-    htmlResponse(response, 400, "<p>Missing SlimWeb site MCP resource.</p>");
-    return;
-  }
-
-  const site = await repository.findSiteByCallbackCode(siteCode);
-
-  if (!site) {
-    htmlResponse(response, 404, "<p>Unknown SlimWeb site MCP code.</p>");
-    return;
-  }
-
-  const credential = stringValue(body.credential) ?? "";
-  const profile = await verifier.verify(credential);
-  const member = await repository.provisionMember(site.id, profile);
-  const accessToken = createSessionToken(
-    {
-      site_id: site.id,
-      callback_code: site.callbackCode,
-      member_id: member.id,
-      email: member.email,
-      google_id: member.googleId,
-    },
-    sessionSecret,
-  );
-  const code = createSignedToken(
-    {
-      typ: "oauth_code",
-      client_id: params.clientId,
-      redirect_uri: params.redirectUri,
-      code_challenge: params.codeChallenge,
-      code_challenge_method: params.codeChallengeMethod,
-      access_token: accessToken,
-      exp: Math.floor(Date.now() / 1000) + 10 * 60,
-    },
-    sessionSecret,
-  );
-  const redirectUrl = new URL(params.redirectUri);
-  redirectUrl.searchParams.set("code", code);
-
-  if (params.state) {
-    redirectUrl.searchParams.set("state", params.state);
-  }
-
-  redirectResponse(response, redirectUrl.toString(), {
-    "set-cookie": sessionCookie(accessToken, process.env.NODE_ENV === "production"),
-  });
-}
-
 async function handleOAuthToken(
   request: IncomingMessage,
   response: ServerResponse,
   sessionSecret: string,
+  repository: SiteMemberRepository,
 ): Promise<void> {
   if (request.method !== "POST") {
     methodNotAllowed(response);
@@ -571,22 +530,26 @@ async function handleOAuthToken(
   }
 
   const code = stringValue(body.code) ?? "";
-  const payload = verifySignedToken(code, sessionSecret);
+  const encrypted = await repository.consumeOAuthCode(code);
+  const payload = encrypted ? openOAuthPayload(encrypted, sessionSecret) : null;
 
   if (
     !payload ||
     payload.typ !== "oauth_code" ||
     typeof payload.exp !== "number" ||
-    payload.exp < Math.floor(Date.now() / 1000) ||
+    payload.exp <= Math.floor(Date.now() / 1000) ||
     typeof payload.site_id !== "number" ||
     typeof payload.callback_code !== "string" ||
     typeof payload.member_id !== "number" ||
     typeof payload.email !== "string" ||
     typeof payload.google_id !== "string" ||
+    typeof payload.member_grant !== "string" ||
+    typeof payload.session_exp !== "number" ||
+    payload.session_exp <= Math.floor(Date.now() / 1000) ||
     typeof payload.redirect_uri !== "string" ||
     typeof payload.client_id !== "string" ||
     typeof payload.code_challenge !== "string" ||
-    typeof payload.code_challenge_method !== "string"
+    payload.code_challenge_method !== "S256"
   ) {
     jsonResponse(response, 400, { error: "invalid_grant" });
     return;
@@ -600,6 +563,8 @@ async function handleOAuthToken(
     return;
   }
 
+  const client=await repository.findOAuthClient(payload.client_id);
+  if(!client?.redirectUris.includes(payload.redirect_uri)){jsonResponse(response,400,{error:"invalid_grant"});return;}
   const verifier = stringValue(body.code_verifier) ?? "";
 
   if (!verifyPkce(verifier, payload.code_challenge, payload.code_challenge_method)) {
@@ -607,6 +572,7 @@ async function handleOAuthToken(
     return;
   }
 
+  if(!await repository.issueMemberCredential(payload.member_grant,payload.site_id,payload.member_id)){jsonResponse(response,400,{error:"invalid_grant"});return;}
   const accessToken = createSessionToken(
     {
       site_id: payload.site_id,
@@ -614,14 +580,17 @@ async function handleOAuthToken(
       member_id: payload.member_id,
       email: payload.email,
       google_id: payload.google_id,
+      member_grant: payload.member_grant,
     },
     sessionSecret,
+    Date.now(),
+    payload.session_exp,
   );
 
   jsonResponse(response, 200, {
     token_type: "Bearer",
     access_token: accessToken,
-    expires_in: 60 * 60 * 24 * 7,
+    expires_in: Math.max(0, payload.session_exp - Math.floor(Date.now() / 1000)),
     scope: stringValue(payload.scope) ?? "mcp",
   }, {
     "cache-control": "no-store",
@@ -636,12 +605,16 @@ async function handleGoogleLogin(
   verifier: GoogleVerifier,
   repository: SiteMemberRepository,
   sessionSecret: string,
+  options: RequestHandlerOptions,
 ): Promise<void> {
   if (request.method !== "POST") {
     methodNotAllowed(response);
     return;
   }
 
+  if((request.headers.origin && request.headers.origin!==new URL(publicBaseUrl(request,options)).origin) || request.headers["sec-fetch-site"]==="cross-site"){
+    jsonResponse(response,403,{error:"invalid_origin"});return;
+  }
   const body = await readJsonRequest(request);
   const credential =
     body && typeof body === "object" && "credential" in body
@@ -656,6 +629,7 @@ async function handleGoogleLogin(
       member_id: member.id,
       email: member.email,
       google_id: member.googleId,
+      member_grant: await repository.issueMemberGrant(member),
     },
     sessionSecret,
   );
@@ -763,7 +737,7 @@ async function handleMcpMessage(
       });
 
     case "tools/list": {
-      const registry = createSiteRegistry(site, options);
+      const registry = await createSiteRegistry(site, options);
       return mcpResult(id, { tools: registry.listTools().map(toolForMcp) });
     }
 
@@ -794,10 +768,10 @@ async function handleMcpMessage(
         message.params && typeof message.params === "object"
           ? (message.params as Record<string, unknown>)
           : {};
-      const registry = createSiteRegistry(site, options, session);
       let result;
 
       try {
+        const registry = await createSiteRegistry(site, options, session);
         result = await registry.callTool(
           String(params.name ?? ""),
           params.arguments ?? {},
@@ -839,17 +813,18 @@ async function handleMcpMessage(
   }
 }
 
-function createSiteRegistry(
+async function createSiteRegistry(
   site: ClientSite,
   options: RequestHandlerOptions,
   session: ClientSessionPayload | null = null,
 ) {
+  const memberCredential = session ? await options.repository!.issueMemberCredential(session.member_grant, site.id, session.member_id) : null;
+  if (session && !memberCredential) throw new WeblessRequestError(401, "Member authorization expired or revoked; reconnect.", null, new URL(options.config.baseUrl));
   return createToolRegistry(
     new WeblessClient({
       baseUrl: options.config.baseUrl,
       siteKey: site.callbackCode,
-      memberId: session?.member_id,
-      mcpSecret: options.config.mcpSecret,
+      memberCredential: memberCredential ?? undefined,
       fetchImpl: options.fetchImpl,
     }),
     session
@@ -1071,9 +1046,13 @@ function matchSiteRoute(pathname: string):
 
 async function readJsonRequest(request: IncomingMessage): Promise<Record<string, unknown> | null> {
   const chunks: Buffer[] = [];
+  let size=0;
 
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);
+    size+=bytes.length;
+    if(size>65536)throw Object.assign(new Error("Request body too large"),{status:413});
+    chunks.push(bytes);
   }
 
   if (chunks.length === 0) {
@@ -1085,9 +1064,13 @@ async function readJsonRequest(request: IncomingMessage): Promise<Record<string,
 
 async function readAnyRequest(request: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
+  let size=0;
 
   for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    const bytes=Buffer.isBuffer(chunk)?chunk:Buffer.from(chunk);
+    size+=bytes.length;
+    if(size>65536)throw Object.assign(new Error("Request body too large"),{status:413});
+    chunks.push(bytes);
   }
 
   if (chunks.length === 0) {
@@ -1128,6 +1111,10 @@ function htmlResponse(
 ): void {
   response.writeHead(status, {
     "content-type": "text/html; charset=utf-8",
+    "cache-control": "no-store",
+    "referrer-policy": "no-referrer",
+    "x-frame-options": "DENY",
+    "content-security-policy": "frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
   });
   response.end(`<!doctype html><html><head><meta charset="utf-8"><title>SlimWeb Client MCP</title></head><body>${body}</body></html>`);
 }
@@ -1187,30 +1174,18 @@ function oauthParamsFromSearch(searchParams: URLSearchParams): OAuthAuthorizePar
   };
 }
 
-function oauthParamsFromRecord(record: Record<string, unknown>): OAuthAuthorizeParams {
-  return {
-    clientId: stringValue(record.client_id) ?? "",
-    redirectUri: stringValue(record.redirect_uri) ?? "",
-    responseType: stringValue(record.response_type) ?? "",
-    state: stringValue(record.state) ?? "",
-    resource: stringValue(record.resource) ?? "",
-    codeChallenge: stringValue(record.code_challenge) ?? "",
-    codeChallengeMethod: stringValue(record.code_challenge_method) ?? "plain",
-  };
-}
-
 function validateOAuthAuthorizeParams(params: OAuthAuthorizeParams): string | null {
   if (!params.clientId) return "Missing OAuth client_id.";
   if (!params.redirectUri) return "Missing OAuth redirect_uri.";
   if (params.responseType !== "code") return "Unsupported OAuth response_type.";
   if (!params.resource) return "Missing OAuth resource.";
-  if (!params.codeChallenge) return "Missing OAuth PKCE code_challenge.";
-  if (!["S256", "plain"].includes(params.codeChallengeMethod)) {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(params.codeChallenge)) return "Invalid OAuth S256 challenge.";
+  if (!["S256"].includes(params.codeChallengeMethod)) {
     return "Unsupported OAuth PKCE code_challenge_method.";
   }
 
   try {
-    new URL(params.redirectUri);
+    if(!allowedOAuthRedirect(params.redirectUri)) return "Invalid OAuth redirect URI.";
     new URL(params.resource);
   } catch {
     return "Invalid OAuth URL parameter.";
@@ -1230,14 +1205,15 @@ function siteCodeFromResource(resource: string): string | null {
   }
 }
 
-function createOAuthCode(
+async function createOAuthCode(
   session: ClientSessionPayload,
   params: OAuthAuthorizeParams,
   secret: string,
-): string {
+  repository: SiteMemberRepository,
+): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
 
-  return createSignedToken(
+  return repository.storeOAuthCode(sealOAuthPayload(
     {
       typ: "oauth_code",
       site_id: session.site_id,
@@ -1245,6 +1221,8 @@ function createOAuthCode(
       member_id: session.member_id,
       email: session.email,
       google_id: session.google_id,
+      member_grant: session.member_grant,
+      session_exp: session.exp,
       client_id: params.clientId,
       redirect_uri: params.redirectUri,
       scope: "mcp",
@@ -1254,7 +1232,7 @@ function createOAuthCode(
       exp: now + 10 * 60,
     },
     secret,
-  );
+  ));
 }
 
 function sameOriginNextPath(next: string | null | undefined): string {
@@ -1303,7 +1281,7 @@ function googleSignInPage(
             headers: { 'content-type': 'application/json' },
             body: JSON.stringify({
               credential: response.credential,
-              next: ${JSON.stringify(next)}
+              next: ${JSON.stringify(next).replace(/</g,"\\u003c")}
             })
           });
           const payload = await result.json().catch(function() { return {}; });
@@ -1311,7 +1289,7 @@ function googleSignInPage(
             alert('登入失敗：' + (payload.error || '請重新再試。'));
             return;
           }
-          window.location.href = payload.next || ${JSON.stringify(next)};
+          window.location.href = payload.next || ${JSON.stringify(next).replace(/</g,"\\u003c")};
         }
       </script>
     </main>
@@ -1323,8 +1301,7 @@ function verifyPkce(
   challenge: string,
   method: string,
 ): boolean {
-  if (!verifier) return false;
-  if (method === "plain") return verifier === challenge;
+  if (method!=="S256" || !/^[A-Za-z0-9._~-]{43,128}$/.test(verifier)) return false;
 
   return createHash("sha256").update(verifier).digest("base64url") === challenge;
 }

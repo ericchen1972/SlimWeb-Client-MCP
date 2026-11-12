@@ -32,7 +32,10 @@ export class GoogleIdentityVerifier implements GoogleVerifier {
 
     const payload = await response.json();
 
-    if (payload.aud !== this.clientId || !payload.sub || !payload.email) {
+    if (payload.aud !== this.clientId || !payload.sub || !payload.email ||
+      ![true, "true"].includes(payload.email_verified) ||
+      !["accounts.google.com", "https://accounts.google.com"].includes(payload.iss) ||
+      !Number.isFinite(Number(payload.exp)) || Number(payload.exp) <= Math.floor(Date.now() / 1000)) {
       throw codedError("Invalid Google account.", "INVALID_GOOGLE_ACCOUNT");
     }
 

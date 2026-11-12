@@ -75,23 +75,20 @@ export class WeblessRequestError extends Error {
 export interface WeblessClientOptions {
   baseUrl: string;
   siteKey?: string;
-  memberId?: number;
-  mcpSecret?: string;
+  memberCredential?: string;
   fetchImpl?: (input: Request) => Promise<Response>;
 }
 
 export class WeblessClient {
   private readonly baseUrl: string;
   private readonly siteKey?: string;
-  private readonly memberId?: number;
-  private readonly mcpSecret?: string;
+  private readonly memberCredential?: string;
   private readonly fetchImpl: (input: Request) => Promise<Response>;
 
   constructor(options: WeblessClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/+$/, "");
     this.siteKey = options.siteKey;
-    this.memberId = options.memberId;
-    this.mcpSecret = options.mcpSecret;
+    this.memberCredential = options.memberCredential;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -159,9 +156,6 @@ export class WeblessClient {
     const url = this.url("/api/storefront/orders");
     this.appendSite(url);
 
-    if (this.memberId !== undefined) {
-      url.searchParams.set("member_id", String(this.memberId));
-    }
 
     if (input.status !== undefined) {
       url.searchParams.set("status", input.status);
@@ -178,9 +172,6 @@ export class WeblessClient {
     const url = this.url("/api/storefront/customer/context");
     this.appendSite(url);
 
-    if (this.memberId !== undefined) {
-      url.searchParams.set("member_id", String(this.memberId));
-    }
 
     return this.getJson(url, true);
   }
@@ -189,9 +180,6 @@ export class WeblessClient {
     const url = this.url("/api/storefront/order-preview");
     this.appendSite(url);
 
-    if (this.memberId !== undefined) {
-      url.searchParams.set("member_id", String(this.memberId));
-    }
 
     return this.postJson(url, {
       items: input.items.map((item) => ({
@@ -220,9 +208,6 @@ export class WeblessClient {
     const url = this.url("/api/storefront/checkouts");
     this.appendSite(url);
 
-    if (this.memberId !== undefined) {
-      url.searchParams.set("member_id", String(this.memberId));
-    }
 
     return this.postJson(url, {
       items: input.items.map((item) => ({
@@ -257,9 +242,6 @@ export class WeblessClient {
     );
     this.appendSite(url);
 
-    if (this.memberId !== undefined) {
-      url.searchParams.set("member_id", String(this.memberId));
-    }
 
     return this.getJson(url, true);
   }
@@ -331,11 +313,11 @@ export class WeblessClient {
       return {};
     }
 
-    if (!this.mcpSecret) {
-      throw new Error("WEBLESS_MCP_SECRET is required for customer and order requests");
+    if (!this.memberCredential) {
+      throw new Error("A member credential is required for customer and order requests");
     }
 
-    return { Authorization: `Bearer ${this.mcpSecret}` };
+    return { Authorization: `Bearer ${this.memberCredential}` };
   }
 }
 

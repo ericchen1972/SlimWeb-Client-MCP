@@ -110,13 +110,12 @@ test("verifyProduct sends product id and quantity to the verify endpoint", async
   assert.deepEqual(result, { available: true });
 });
 
-test("getOrderList sends member id and status filters", async () => {
+test("getOrderList sends member credential and status filters", async () => {
   const requests: Request[] = [];
   const client = new WeblessClient({
     baseUrl: "https://example.test",
     siteKey: "site-1",
-    memberId: 42,
-    mcpSecret: "test-secret",
+    memberCredential: "test-secret",
     fetchImpl: async (input) => {
       requests.push(input as Request);
       return Response.json({ orders: [{ number: "A001" }] });
@@ -127,19 +126,18 @@ test("getOrderList sends member id and status filters", async () => {
 
   assert.equal(
     requests[0].url,
-    "https://example.test/api/storefront/orders?site=site-1&member_id=42&status=pending&limit=5",
+    "https://example.test/api/storefront/orders?site=site-1&status=pending&limit=5",
   );
   assert.equal(requests[0].headers.get("authorization"), "Bearer test-secret");
   assert.deepEqual(result, { orders: [{ number: "A001" }] });
 });
 
-test("getCustomerContext sends member id to the storefront customer endpoint", async () => {
+test("getCustomerContext sends member credential to the storefront customer endpoint", async () => {
   const requests: Request[] = [];
   const client = new WeblessClient({
     baseUrl: "https://example.test",
     siteKey: "site-1",
-    memberId: 42,
-    mcpSecret: "test-secret",
+    memberCredential: "test-secret",
     fetchImpl: async (input) => {
       requests.push(input as Request);
       return Response.json({ customer: { name: "Buyer" } });
@@ -150,7 +148,7 @@ test("getCustomerContext sends member id to the storefront customer endpoint", a
 
   assert.equal(
     requests[0].url,
-    "https://example.test/api/storefront/customer/context?site=site-1&member_id=42",
+    "https://example.test/api/storefront/customer/context?site=site-1",
   );
   assert.deepEqual(result, { customer: { name: "Buyer" } });
 });
@@ -161,8 +159,7 @@ test("getOrderPreview posts confirmation fields to the storefront preview endpoi
   const client = new WeblessClient({
     baseUrl: "https://example.test",
     siteKey: "site-1",
-    memberId: 42,
-    mcpSecret: "test-secret",
+    memberCredential: "test-secret",
     fetchImpl: async (input) => {
       const request = input as Request;
       requests.push(request);
@@ -182,7 +179,7 @@ test("getOrderPreview posts confirmation fields to the storefront preview endpoi
 
   assert.equal(
     requests[0].url,
-    "https://example.test/api/storefront/order-preview?site=site-1&member_id=42",
+    "https://example.test/api/storefront/order-preview?site=site-1",
   );
   assert.equal(requests[0].method, "POST");
   assert.deepEqual(bodies[0], {
@@ -202,8 +199,7 @@ test("startCheckout posts checkout session fields to the storefront checkout end
   const client = new WeblessClient({
     baseUrl: "https://example.test",
     siteKey: "site-1",
-    memberId: 42,
-    mcpSecret: "test-secret",
+    memberCredential: "test-secret",
     fetchImpl: async (input) => {
       const request = input as Request;
       requests.push(request);
@@ -227,7 +223,7 @@ test("startCheckout posts checkout session fields to the storefront checkout end
 
   assert.equal(
     requests[0].url,
-    "https://example.test/api/storefront/checkouts?site=site-1&member_id=42",
+    "https://example.test/api/storefront/checkouts?site=site-1",
   );
   assert.equal(requests[0].method, "POST");
   assert.deepEqual(bodies[0], {
@@ -250,8 +246,7 @@ test("getCheckoutStatus fetches a checkout session by token", async () => {
   const client = new WeblessClient({
     baseUrl: "https://example.test",
     siteKey: "site-1",
-    memberId: 42,
-    mcpSecret: "test-secret",
+    memberCredential: "test-secret",
     fetchImpl: async (input) => {
       requests.push(input as Request);
       return Response.json({ checkout: { token: "chk_123", status: "waiting_payment" } });
@@ -262,7 +257,7 @@ test("getCheckoutStatus fetches a checkout session by token", async () => {
 
   assert.equal(
     requests[0].url,
-    "https://example.test/api/storefront/checkouts/chk_123?site=site-1&member_id=42",
+    "https://example.test/api/storefront/checkouts/chk_123?site=site-1",
   );
   assert.deepEqual(result, { checkout: { token: "chk_123", status: "waiting_payment" } });
 });
@@ -291,7 +286,7 @@ test("requests throw a structured error for non-2xx Webless responses", async ()
 
 test("preview and draft forward identifier selections without client price fields", async () => {
   const bodies: unknown[] = [];
-  const client = new WeblessClient({baseUrl: "https://example.test", siteKey: "site", memberId: 4, mcpSecret: "test", fetchImpl: async (request) => { bodies.push(await request.json()); return Response.json({}); }});
+  const client = new WeblessClient({baseUrl: "https://example.test", siteKey: "site", memberCredential: "test", fetchImpl: async (request) => { bodies.push(await request.json()); return Response.json({}); }});
   const input = {items: [{productId: 1, quantity: 2, variantId: 3, key: "1:3", isAddOn: true, parentCartItemKey: "4", price: 1}], memberCouponId: 5, discountCode: "SAVE", recipientCountryCode: "JP" as const, storefrontPaymentMethod: "bank_transfer", paymentMethod: "offline" as const, logisticsMethod: "home_delivery" as const, buyerName: "B", buyerPhone: "1", recipientName: "R", recipientPhone: "2", recipientAddress: "A"};
   await client.getOrderPreview(input);
   await client.startCheckout(input);
